@@ -15,7 +15,7 @@ class OpenSeedConfig(BaseModel):
 
     library_dir: Path = Field(default_factory=lambda: _DEFAULT_DIR / "library")
     config_dir: Path = Field(default_factory=lambda: _DEFAULT_DIR)
-    default_model: str = "claude-sonnet-4-20250514"
+    default_model: str = "claude-sonnet-4-6"
 
 
 def _config_path() -> Path:

@@ -77,7 +77,7 @@ def list_experiments(ctx: click.Context, paper_id: str | None) -> None:
 def show(ctx: click.Context, experiment_id: str) -> None:
     """Show experiment details."""
     lib = _get_library(ctx)
-    exp = lib.get_experiment(experiment_id)
+    exp = lib.get_experiment(experiment_id) or lib.get_experiment_by_name(experiment_id)
     if not exp:
         console.print(f"[red]Experiment {experiment_id} not found.[/red]")
         raise SystemExit(1)

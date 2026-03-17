@@ -1,60 +1,56 @@
 # OpenSeed
 
-AI-powered Research Workflow Management CLI.
+AI-powered research CLI — discover, read, and analyze academic papers with Claude.
 
-## Features
+## What it does
 
-- **Paper Management** — Import from ArXiv, tag, search, track reading status
-- **AI Reading** — Claude-powered summaries, key findings extraction, question generation
-- **Annotations** — Per-page notes with tags
-- **Experiment Tracking** — Link experiments to papers, track runs and metrics
-- **Research Assistant** — Ask questions about papers, get AI-driven reviews
+- **Smart search** — finds relevant papers via Claude WebSearch, ranks by real citation counts (Semantic Scholar)
+- **Analysis pipeline** — search → pick papers → auto-summarize + auto-tag → save to library in one flow
+- **AI summarization** — structured summaries: key contributions, methodology, limitations, relevance score
+- **Experiment code gen** — generate runnable PyTorch/sklearn experiment code from a paper
+- **Library management** — ArXiv import, tags, reading status, deduplication
 
-## Quick Start
+## Search
+
+![openseed paper search "attention"](screenshot-20260317-144253.png)
+
+Papers are ranked by real citation counts fetched from Semantic Scholar — not keyword matching.
+
+## Install
 
 ```bash
-# Install
 pip install -e ".[dev]"
-
-# Initialize library
-openseed init
-
-# Add a paper from ArXiv
-openseed paper add https://arxiv.org/abs/2301.00001
-
-# List your library
-openseed paper list
-
-# Summarize a paper with AI
-openseed agent summarize <paper-id>
-
-# Ask a research question
-openseed agent ask "What are the key contributions of this paper?"
+openseed doctor    # check environment
+openseed setup     # configure auth
 ```
 
-## Development
+**Auth** — any of these work:
 
 ```bash
-make install      # Install in editable mode with dev deps
-make test         # Run tests
-make lint         # Lint with ruff
-make format       # Auto-format with ruff
-make typecheck    # Run mypy
-make clean        # Remove build artifacts
+export ANTHROPIC_API_KEY=sk-ant-...   # Anthropic API key
+# or log in via Claude CLI
+claude setup-token                     # OAuth (openseed setup will detect it)
 ```
 
-## Architecture
+## Core Commands
 
-src-layout with Click CLI, Pydantic v2 models, JSON storage, and Claude AI integration.
+```bash
+# Search & discover
+openseed paper search "diffusion models" --count 20
+openseed agent search "multi-agent systems"         # deeper search with trend summary
+openseed agent pipeline "ViT image classification"  # search → select → analyze → save
 
-```
-src/openseed/
-├── cli/          # Click command groups
-├── models/       # Pydantic data models
-├── storage/      # JSON library CRUD
-├── services/     # ArXiv API, PDF extraction
-├── agent/        # Claude-powered reader & assistant
-└── config.py     # Configuration
+# Manage your library
+openseed paper add https://arxiv.org/abs/1706.03762
+openseed paper list
+openseed paper show <id>
+
+# Analyze papers
+openseed agent summarize <id>          # English summary
+openseed agent summarize <id> --cn     # Chinese summary
+openseed agent review <id>             # peer review
+openseed agent ask "What is RLHF?"     # research Q&A
+openseed agent codegen <id>            # generate experiment code
 ```
 
 ## License

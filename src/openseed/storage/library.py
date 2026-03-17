@@ -33,10 +33,14 @@ class PaperLibrary:
             json.dumps([p.model_dump(mode="json") for p in papers], indent=2, default=str),
         )
 
-    def add_paper(self, paper: Paper) -> None:
+    def add_paper(self, paper: Paper) -> bool:
+        """Add paper; skip if same arxiv_id already exists. Returns True if added."""
         papers = self._load_papers()
+        if paper.arxiv_id and any(p.arxiv_id == paper.arxiv_id for p in papers):
+            return False
         papers.append(paper)
         self._save_papers(papers)
+        return True
 
     def get_paper(self, paper_id: str) -> Paper | None:
         for p in self._load_papers():
@@ -65,11 +69,7 @@ class PaperLibrary:
 
     def search_papers(self, query: str) -> list[Paper]:
         q = query.lower()
-        return [
-            p
-            for p in self._load_papers()
-            if q in p.title.lower() or q in p.abstract.lower()
-        ]
+        return [p for p in self._load_papers() if q in p.title.lower() or q in p.abstract.lower()]
 
     # ── Experiments ───────────────────────────────────────────
 
@@ -82,9 +82,7 @@ class PaperLibrary:
     def _save_experiments(self, experiments: list[Experiment]) -> None:
         self._atomic_write(
             self._experiments_path,
-            json.dumps(
-                [e.model_dump(mode="json") for e in experiments], indent=2, default=str
-            ),
+            json.dumps([e.model_dump(mode="json") for e in experiments], indent=2, default=str),
         )
 
     def add_experiment(self, experiment: Experiment) -> None:
@@ -95,6 +93,12 @@ class PaperLibrary:
     def get_experiment(self, experiment_id: str) -> Experiment | None:
         for e in self._load_experiments():
             if e.id == experiment_id:
+                return e
+        return None
+
+    def get_experiment_by_name(self, name: str) -> Experiment | None:
+        for e in self._load_experiments():
+            if e.name == name:
                 return e
         return None
 
@@ -113,9 +117,7 @@ class PaperLibrary:
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", dir=path.parent, suffix=".tmp", delete=False
-        )
+        tmp = tempfile.NamedTemporaryFile(mode="w", dir=path.parent, suffix=".tmp", delete=False)
         try:
             tmp.write(content)
             tmp.flush()

@@ -49,17 +49,13 @@ class TestPaperLibrary:
 
 
 class TestExperimentLibrary:
-    def test_add_and_list(
-        self, tmp_library: PaperLibrary, sample_experiment: Experiment
-    ) -> None:
+    def test_add_and_list(self, tmp_library: PaperLibrary, sample_experiment: Experiment) -> None:
         tmp_library.add_experiment(sample_experiment)
         experiments = tmp_library.list_experiments()
         assert len(experiments) == 1
         assert experiments[0].name == sample_experiment.name
 
-    def test_get_experiment(
-        self, tmp_library: PaperLibrary, sample_experiment: Experiment
-    ) -> None:
+    def test_get_experiment(self, tmp_library: PaperLibrary, sample_experiment: Experiment) -> None:
         tmp_library.add_experiment(sample_experiment)
         found = tmp_library.get_experiment(sample_experiment.id)
         assert found is not None
