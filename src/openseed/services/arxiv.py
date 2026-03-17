@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import httpx
 
 from openseed.models.paper import Author, Paper
 
 _ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5})(v\d+)?$")
-_ARXIV_API = "http://export.arxiv.org/api/query"
+_ARXIV_API = "https://export.arxiv.org/api/query"
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
 
@@ -95,12 +96,26 @@ def search_papers(query: str, max_results: int = 10) -> list[Paper]:
     return papers
 
 
+def _validate_arxiv_id(arxiv_id: str) -> None:
+    if not _ARXIV_ID_RE.fullmatch(arxiv_id):
+        raise ValueError(f"Invalid ArXiv ID: {arxiv_id!r}")
+
+
+def _validate_dest(dest: str) -> Path:
+    resolved = Path(dest).resolve()
+    if ".." in Path(dest).parts:
+        raise ValueError(f"Path traversal detected in dest: {dest!r}")
+    return resolved
+
+
 async def download_pdf(arxiv_id: str, dest: str) -> str:
     """Download the PDF for an ArXiv paper."""
+    _validate_arxiv_id(arxiv_id)
+    resolved_dest = _validate_dest(dest)
     url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
-        with open(dest, "wb") as f:
+        with open(resolved_dest, "wb") as f:
             f.write(resp.content)
-    return dest
+    return str(resolved_dest)
