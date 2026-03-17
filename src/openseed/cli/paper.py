@@ -199,38 +199,9 @@ def tag(ctx: click.Context, paper_id: str, name: str, color: str) -> None:
     console.print(f"[green]✓[/green] Tagged [bold]{p.title}[/bold] with '{name}'")
 
 
-def _parse_selection(raw: str, count: int) -> list[int]:
-    if raw.strip().lower() == "all":
-        return list(range(count))
-    indices = []
-    for part in raw.split(","):
-        part = part.strip()
-        if "-" in part:
-            lo, _, hi = part.partition("-")
-            try:
-                for i in range(int(lo) - 1, int(hi)):
-                    if 0 <= i < count:
-                        indices.append(i)
-            except ValueError:
-                pass
-        else:
-            try:
-                idx = int(part) - 1
-                if 0 <= idx < count:
-                    indices.append(idx)
-            except ValueError:
-                pass
-    return indices
-
-
 def _search_download(ctx: click.Context, results: list[dict]) -> None:
-    raw = click.prompt("Select papers to add + download PDF (e.g. 1,3 or 1-5 or all, q to skip)")
-    if raw.strip().lower() == "q":
-        return
-    selected = [results[i] for i in _parse_selection(raw, len(results))]
-    if not selected:
-        console.print("[yellow]Invalid selection.[/yellow]")
-        return
+    selected = results[:10]
+    console.print(f"\n[bold]Downloading top {len(selected)} papers…[/bold]\n")
     lib = _get_library(ctx)
     for r in selected:
         try:
