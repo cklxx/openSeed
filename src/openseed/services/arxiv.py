@@ -49,6 +49,52 @@ async def fetch_paper_metadata(arxiv_id: str) -> Paper:
     )
 
 
+def search_papers(query: str, max_results: int = 10) -> list[Paper]:
+    """Search ArXiv for papers matching a keyword query.
+
+    Args:
+        query: Search terms to query against all fields.
+        max_results: Maximum number of results to return.
+
+    Returns:
+        List of Paper objects with metadata populated.
+    """
+    with httpx.Client(timeout=30, follow_redirects=True) as client:
+        resp = client.get(
+            _ARXIV_API,
+            params={"search_query": f"all:{query}", "max_results": max_results},
+        )
+        resp.raise_for_status()
+
+    root = ET.fromstring(resp.text)
+    papers = []
+    for entry in root.findall(f"{_ATOM_NS}entry"):
+        entry_id = (entry.findtext(f"{_ATOM_NS}id") or "").strip()
+        arxiv_id = parse_arxiv_id(entry_id)
+        if not arxiv_id:
+            continue
+
+        title = (entry.findtext(f"{_ATOM_NS}title") or "").strip().replace("\n", " ")
+        abstract = (entry.findtext(f"{_ATOM_NS}summary") or "").strip()
+
+        authors = []
+        for author_el in entry.findall(f"{_ATOM_NS}author"):
+            name = (author_el.findtext(f"{_ATOM_NS}name") or "").strip()
+            if name:
+                authors.append(Author(name=name))
+
+        papers.append(
+            Paper(
+                title=title,
+                authors=authors,
+                abstract=abstract,
+                arxiv_id=arxiv_id,
+                url=f"https://arxiv.org/abs/{arxiv_id}",
+            )
+        )
+    return papers
+
+
 async def download_pdf(arxiv_id: str, dest: str) -> str:
     """Download the PDF for an ArXiv paper."""
     url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
