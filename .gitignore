@@ -36,3 +36,4 @@ Thumbs.db
 *.pdf
 logs/
 .openmax/
+.openmax-worktrees/
