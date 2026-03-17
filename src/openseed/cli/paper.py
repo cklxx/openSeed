@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from openseed.models.paper import Paper, Tag
+from openseed.services.arxiv import search_papers
 from openseed.storage.library import PaperLibrary
 
 console = Console()
@@ -131,6 +132,43 @@ def tag(ctx: click.Context, paper_id: str, name: str, color: str) -> None:
     p.tags.append(Tag(name=name, color=color))
     lib.update_paper(p)
     console.print(f"[green]✓[/green] Tagged [bold]{p.title}[/bold] with '{name}'")
+
+
+@paper.command("search")
+@click.argument("query")
+@click.option("--max-results", default=10, show_default=True, help="Maximum number of results.")
+@click.option("--add", is_flag=True, help="Auto-add the first result to the library.")
+@click.pass_context
+def search(ctx: click.Context, query: str, max_results: int, add: bool) -> None:
+    """Search ArXiv for papers by keyword."""
+    with console.status(f"[cyan]Searching ArXiv for '{query}'…[/cyan]"):
+        results = search_papers(query, max_results=max_results)
+
+    if not results:
+        console.print("[dim]No results found.[/dim]")
+        return
+
+    table = Table(title=f"ArXiv Search: {query}", show_lines=False)
+    table.add_column("#", style="dim", width=4)
+    table.add_column("ArXiv ID", style="cyan", width=15)
+    table.add_column("Title", style="bold", max_width=50)
+    table.add_column("Authors", max_width=30)
+    table.add_column("Year", width=6)
+
+    for i, p in enumerate(results, 1):
+        authors_str = ", ".join(a.name for a in p.authors[:3])
+        if len(p.authors) > 3:
+            authors_str += f" +{len(p.authors) - 3}"
+        year = f"20{p.arxiv_id[:2]}" if p.arxiv_id and len(p.arxiv_id) >= 2 else "—"
+        table.add_row(str(i), p.arxiv_id or "—", p.title, authors_str, year)
+
+    console.print(table)
+
+    if add and results:
+        lib = _get_library(ctx)
+        first = results[0]
+        lib.add_paper(first)
+        console.print(f"[green]✓[/green] Added [bold]{first.title}[/bold] (id: {first.id})")
 
 
 @paper.command()
