@@ -118,7 +118,7 @@ def _parse_ranked_lines(raw: str) -> list[dict]:
     return papers
 
 
-def discover_papers(query: str, model: str, count: int = 10) -> list[dict]:
+def discover_papers(search_query: str, model: str, count: int = 10) -> list[dict]:
     """Phase 1: Claude web search → parsed paper list with estimated citations."""
     system = (
         "You are a research paper discovery assistant with web search access. "
@@ -132,7 +132,7 @@ def discover_papers(query: str, model: str, count: int = 10) -> list[dict]:
         "|Vaswani et al.|Transformer architecture\n"
         "Only include papers with valid ArXiv IDs. Sort descending by citation count."
     )
-    raw = _ask(model, system, f"Find {count} papers about: {query}")
+    raw = _ask(model, system, f"Find {count} papers about: {search_query}")
     return _parse_ranked_lines(raw)
 
 
@@ -145,12 +145,12 @@ def enrich_citations(papers: list[dict]) -> list[dict]:
     return sorted(papers, key=lambda x: x["citations"], reverse=True)
 
 
-def search_papers_ranked(query: str, model: str, count: int = 10) -> list[dict]:
+def search_papers_ranked(search_query: str, model: str, count: int = 10) -> list[dict]:
     """Full pipeline: discover via Claude + verify via Semantic Scholar."""
-    return enrich_citations(discover_papers(query, model, count))
+    return enrich_citations(discover_papers(search_query, model, count))
 
 
-def search_papers_agent(query: str, model: str, count: int = 10) -> str:
+def search_papers_agent(search_query: str, model: str, count: int = 10) -> str:
     """Deep search using Claude web access — rich markdown output for pipeline command."""
     system = (
         "You are a research paper discovery assistant with web search access. "
@@ -161,7 +161,7 @@ def search_papers_agent(query: str, model: str, count: int = 10) -> str:
         "Prioritize highly-cited papers. Use multiple searches to reach the target count. "
         "End with a ~150-word summary of key trends in this research area."
     )
-    return _ask(model, system, f"Find {count} papers about: {query}")
+    return _ask(model, system, f"Find {count} papers about: {search_query}")
 
 
 class PaperReader:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import toml
@@ -26,7 +27,7 @@ def load_config() -> OpenSeedConfig:
     """Load config from disk, returning defaults if missing."""
     path = _config_path()
     if path.exists():
-        data = toml.loads(path.read_text())
+        data = tomllib.loads(path.read_text())
         return OpenSeedConfig(**data)
     return OpenSeedConfig()
 
