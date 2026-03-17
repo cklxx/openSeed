@@ -17,12 +17,13 @@ from openseed.agent.assistant import ResearchAssistant
 from openseed.agent.reader import (
     PaperReader,
     auto_tag_paper,
+    extract_paper_visuals,
     generate_experiment_code,
     search_papers_agent,
     synthesize_papers,
 )
 from openseed.auth import has_anthropic_auth
-from openseed.cli._helpers import get_config, get_library, require_paper
+from openseed.cli._helpers import get_config, get_library, render_paper_visuals, require_paper
 from openseed.models.paper import Paper, Tag
 from openseed.services.arxiv import fetch_paper_metadata
 from openseed.storage.library import PaperLibrary
@@ -74,6 +75,9 @@ def summarize(ctx: click.Context, paper_id: str, cn: bool) -> None:
     md_path = lib.save_summary(p)
     console.print(Panel(Markdown(p.summary), title=f"Summary: {p.title}", border_style="green"))
     console.print(f"[dim]Saved → {md_path}[/dim]")
+    with console.status("[cyan]Extracting visuals…[/cyan]"):
+        visuals = extract_paper_visuals(p.abstract or p.title, config.default_model)
+    render_paper_visuals(visuals, console)
 
 
 @agent.command()

@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
 import click
-from rich.columns import Columns
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from openseed.agent.reader import PaperReader, discover_papers, enrich_citations
-from openseed.cli._helpers import get_config, get_library, require_paper
+from openseed.agent.reader import (
+    PaperReader,
+    discover_papers,
+    enrich_citations,
+    extract_paper_visuals,
+)
+from openseed.cli._helpers import get_config, get_library, render_paper_visuals, require_paper
 from openseed.models.paper import Paper, Tag, paper_to_bibtex
 from openseed.models.watch import ArxivWatch
 from openseed.services.arxiv import (
@@ -60,25 +63,7 @@ def _arxiv_year(arxiv_id: str | None) -> int | None:
 
 
 def _score_bar(score: float, max_score: float, width: int = 10) -> str:
-    ratio = min(score / max_score, 1.0) if max_score else 0.0
-    filled = round(ratio * width)
-    bar = f"[green]{'█' * filled}[/green][dim]{'░' * (width - filled)}[/dim]"
-    return f"[yellow]{score:5.1f}[/yellow] {bar}"
-
-
-def _year_chart(results: list[dict]) -> Table | None:
-    counts = Counter(r.get("year") for r in results if r.get("year"))
-    if not counts:
-        return None
-    max_count = max(counts.values())
-    table = Table(title="Year distribution", show_header=False, box=None, padding=(0, 1))
-    table.add_column("Year", style="cyan", width=6)
-    table.add_column("Bar", no_wrap=True)
-    table.add_column("n", style="dim", width=4, justify="right")
-    for year in sorted(counts):
-        bar = "█" * round(counts[year] / max_count * 20)
-        table.add_row(str(year), f"[green]{bar}[/green]", str(counts[year]))
-    return table
+    return f"[yellow]{score:5.1f}[/yellow]"
 
 
 def _build_search_table(results: list[dict], since: int | None) -> Table:
@@ -88,7 +73,7 @@ def _build_search_table(results: list[dict], since: int | None) -> Table:
     table.add_column("#", style="dim", width=4)
     table.add_column("Title", style="bold", max_width=38)
     table.add_column("Relevance", max_width=28)
-    table.add_column("Rank", width=18, no_wrap=True)
+    table.add_column("Rank", width=7, justify="right")
     table.add_column("Year", justify="right", width=6)
     table.add_column("Cite", justify="right", width=7)
     table.add_column("Authors", style="dim", max_width=18)
@@ -128,6 +113,9 @@ def _summarize_cn(p: Paper, config, lib) -> None:
     md_path = lib.save_summary(p)
     console.print(Panel(Markdown(p.summary), title=p.title[:60], border_style="green"))
     console.print(f"[dim]Saved → {md_path}[/dim]")
+    with console.status("[cyan]Extracting visuals…[/cyan]"):
+        visuals = extract_paper_visuals(p.abstract or p.title, config.default_model)
+    render_paper_visuals(visuals, console)
 
 
 def _fetch_and_add(ctx: click.Context, r: dict, lib, config, cn: bool) -> None:
@@ -311,12 +299,7 @@ def search(
     if not results:
         console.print("[dim]No results found.[/dim]")
         return
-    table = _build_search_table(results, since)
-    chart = _year_chart(results)
-    if chart:
-        console.print(Columns([table, chart], equal=False, expand=False))
-    else:
-        console.print(table)
+    console.print(_build_search_table(results, since))
     if download:
         lib = get_library(ctx)
         console.print(f"\n[bold]Downloading top {min(10, len(results))} papers…[/bold]\n")

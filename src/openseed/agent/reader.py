@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import re
 from collections.abc import Callable
@@ -228,6 +229,22 @@ def synthesize_papers(texts: list[str], model: str) -> str:
     )
     body = "\n\n---\n\n".join(f"Paper {i + 1}:\n{t}" for i, t in enumerate(texts))
     return _ask(model, system, f"Synthesize these papers:\n\n{body}")
+
+
+def extract_paper_visuals(text: str, model: str) -> dict:
+    """Ask LLM to extract pipeline steps and metrics comparisons as JSON."""
+    system = (
+        "Extract from this paper into JSON with optional keys: "
+        '"pipeline" (list of ≤6 concise method step names), '
+        '"metrics" (list of {"name": str, "proposed": number, "baseline": number}). '
+        "Return ONLY valid JSON, no markdown fences. Omit keys with no data."
+    )
+    raw = _ask(model, system, f"Extract visuals:\n\n{text}")
+    raw = re.sub(r"```[a-z]*\n?", "", raw).strip().strip("```")
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {}
 
 
 class PaperReader:
