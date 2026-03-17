@@ -10,7 +10,7 @@ import httpx
 
 from openseed.models.paper import Author, Paper
 
-_ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5})(v\d+)?$")
+_ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5})(v\d+)?(\.pdf)?$")
 _ARXIV_API = "https://export.arxiv.org/api/query"
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
@@ -23,11 +23,14 @@ def parse_arxiv_id(url: str) -> str | None:
 
 async def fetch_paper_metadata(arxiv_id: str) -> Paper:
     """Fetch paper metadata from the ArXiv API."""
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    timeout = httpx.Timeout(30.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         resp = await client.get(_ARXIV_API, params={"id_list": arxiv_id})
         resp.raise_for_status()
-
-    root = ET.fromstring(resp.text)
+    try:
+        root = ET.fromstring(resp.text)
+    except ET.ParseError as exc:
+        raise ValueError(f"Malformed XML for {arxiv_id}") from exc
     entry = root.find(f"{_ATOM_NS}entry")
     if entry is None:
         raise ValueError(f"No entry found for {arxiv_id}")

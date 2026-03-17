@@ -34,8 +34,13 @@ def research(ctx: click.Context) -> None:
 @click.argument("topic")
 @click.option("--count", default=15, show_default=True, help="Papers to discover.")
 @click.option("--depth", default=2, show_default=True, help="Query expansion rounds.")
+@click.option(
+    "--since", "since_year", default=None, type=int, help="Only papers from this year or later."
+)
 @click.pass_context
-def run_research(ctx: click.Context, topic: str, count: int, depth: int) -> None:
+def run_research(
+    ctx: click.Context, topic: str, count: int, depth: int, since_year: int | None
+) -> None:
     """Run autonomous research: discover → analyze → synthesize → report."""
     _require_auth()
     lib = get_library(ctx)
@@ -47,7 +52,9 @@ def run_research(ctx: click.Context, topic: str, count: int, depth: int) -> None
         def _on_step(msg: str) -> None:
             status.update(f"[cyan]{msg}[/cyan]")
 
-        session = researcher.run(topic, count=count, depth=depth, on_step=_on_step)
+        session = researcher.run(
+            topic, count=count, depth=depth, since_year=since_year, on_step=_on_step
+        )
 
     lib.add_research_session(session)
     _render_session(session, lib)
@@ -93,7 +100,7 @@ def _render_session(session, lib) -> None:
     )
     if session.report:
         console.print(Panel(Markdown(session.report), title="Report", border_style="green"))
-    elif session.synthesis:
+    if session.synthesis:
         console.print(Panel(Markdown(session.synthesis), title="Synthesis", border_style="blue"))
 
 

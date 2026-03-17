@@ -12,7 +12,7 @@ from openseed.auth import (
     detect_rc_file,
     has_anthropic_auth,
 )
-from openseed.cli.agent import agent
+from openseed.cli.agent import agent, ask
 from openseed.cli.experiment import experiment
 from openseed.cli.paper import paper
 from openseed.cli.research import research
@@ -142,3 +142,4 @@ cli.add_command(paper)
 cli.add_command(experiment)
 cli.add_command(agent)
 cli.add_command(research)
+cli.add_command(ask, name="ask")

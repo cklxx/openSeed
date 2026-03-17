@@ -2,6 +2,7 @@
 
 from openseed.models.experiment import Experiment, ExperimentRun
 from openseed.models.paper import Annotation, Author, Paper, Tag
+from openseed.models.research import ResearchSession
 
 
 class TestPaperModels:
@@ -57,3 +58,22 @@ class TestExperimentModels:
         restored = Experiment.model_validate(data)
         assert restored.name == sample_experiment.name
         assert restored.paper_id == sample_experiment.paper_id
+
+
+class TestResearchSession:
+    def test_defaults(self) -> None:
+        s = ResearchSession(topic="transformers")
+        assert s.topic == "transformers"
+        assert s.paper_ids == []
+        assert s.query_variants == []
+        assert s.synthesis == ""
+        assert s.report == ""
+        assert s.id  # auto-generated
+
+    def test_roundtrip(self) -> None:
+        s = ResearchSession(topic="diffusion models", paper_ids=["abc", "def"])
+        data = s.model_dump(mode="json")
+        s2 = ResearchSession(**data)
+        assert s2.topic == s.topic
+        assert s2.paper_ids == s.paper_ids
+        assert s2.id == s.id

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import re
 from collections.abc import Callable
@@ -12,6 +13,8 @@ from datetime import date
 import httpx
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 from claude_agent_sdk.types import AssistantMessage, ToolUseBlock
+
+_log = logging.getLogger(__name__)
 
 
 def _make_opts(model: str, system: str) -> ClaudeAgentOptions:
@@ -112,31 +115,45 @@ def _fetch_citations(arxiv_ids: list[str]) -> dict[str, int]:
     if not arxiv_ids:
         return {}
     try:
-        with httpx.Client(timeout=15) as client:
+        timeout = httpx.Timeout(10.0, connect=5.0)
+        with httpx.Client(timeout=timeout) as client:
             resp = client.post(
                 "https://api.semanticscholar.org/graph/v1/paper/batch",
                 json={"ids": [f"ArXiv:{aid}" for aid in arxiv_ids]},
                 params={"fields": "citationCount"},
             )
-            if resp.status_code == 200:
-                return {
-                    aid: (item.get("citationCount") or 0)
-                    for aid, item in zip(arxiv_ids, resp.json())
-                    if item is not None
-                }
-    except Exception:
-        pass
+            if resp.status_code == 429:
+                _log.warning("Semantic Scholar rate-limited; using estimated citations")
+                return {}
+            if resp.status_code != 200:
+                _log.warning(
+                    "Semantic Scholar returned %d; using estimated citations", resp.status_code
+                )
+                return {}
+            return {
+                aid: (item.get("citationCount") or 0)
+                for aid, item in zip(arxiv_ids, resp.json())
+                if item is not None
+            }
+    except httpx.TimeoutException:
+        _log.warning("Semantic Scholar timed out; using estimated citations")
+    except Exception as exc:
+        _log.warning("Semantic Scholar error: %s", exc)
     return {}
 
 
 def _parse_ranked_lines(raw: str) -> list[dict]:
+    raw = re.sub(r"```[a-z]*\n?", "", raw).strip().strip("```")
     papers = []
+    skipped = 0
     for line in raw.strip().splitlines():
         parts = line.strip().split("|")
         if len(parts) < 3:
+            skipped += 1
             continue
         arxiv_id = parts[0].strip()
         if not _ARXIV_ID_RE.match(arxiv_id):
+            skipped += 1
             continue
         try:
             papers.append(
@@ -151,7 +168,11 @@ def _parse_ranked_lines(raw: str) -> list[dict]:
                 }
             )
         except (ValueError, IndexError):
-            pass
+            skipped += 1
+    if not papers and raw.strip():
+        _log.warning(
+            "discover_papers: 0 valid lines parsed (skipped=%d). Head: %.200s", skipped, raw
+        )
     return papers
 
 

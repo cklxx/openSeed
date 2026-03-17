@@ -87,18 +87,6 @@ def summarize(ctx: click.Context, paper_id: str, cn: bool) -> None:
 
 
 @agent.command()
-@click.argument("query")
-@click.pass_context
-def search(ctx: click.Context, query: str) -> None:
-    """Intelligently search for papers using AI."""
-    _require_auth()
-    config = get_config(ctx)
-    with console.status(f"[cyan]Searching for '{query}'…[/cyan]"):
-        result = search_papers_agent(query, model=config.default_model)
-    console.print(Panel(Markdown(result), title=f"Search: {query}", border_style="cyan"))
-
-
-@agent.command()
 @click.argument("paper_id")
 @click.pass_context
 def review(ctx: click.Context, paper_id: str) -> None:
@@ -222,7 +210,17 @@ def _search_with_status(query: str, model: str, count: int) -> str:
         return search_papers_agent(query, model=model, count=count, on_step=_on_step)
 
 
-def _pipeline_loop(selected_ids: list[str], model: str, lib: PaperLibrary) -> None:
+async def _fetch_papers(arxiv_ids: list[str]) -> list[tuple[str, Paper | Exception]]:
+    results = await asyncio.gather(
+        *[fetch_paper_metadata(aid) for aid in arxiv_ids], return_exceptions=True
+    )
+    return list(zip(arxiv_ids, results))
+
+
+def _pipeline_loop(
+    selected_ids: list[str], model: str, lib: PaperLibrary, cn: bool = False
+) -> None:
+    fetched = asyncio.run(_fetch_papers(selected_ids))
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -234,18 +232,12 @@ def _pipeline_loop(selected_ids: list[str], model: str, lib: PaperLibrary) -> No
     ) as progress:
         overall = progress.add_task("[bold]Pipeline[/bold]", total=len(selected_ids))
         paper_task = progress.add_task("", total=2)
-        for arxiv_id in selected_ids:
-            progress.update(
-                paper_task, description=f"[cyan]Fetching {arxiv_id}…[/cyan]", completed=0
-            )
-            try:
-                paper = asyncio.run(fetch_paper_metadata(arxiv_id))
-            except Exception as exc:
-                console.print(f"[red]Failed to fetch {arxiv_id}: {exc}[/red]")
+        for arxiv_id, paper in fetched:
+            if isinstance(paper, Exception):
+                console.print(f"[red]Failed to fetch {arxiv_id}: {paper}[/red]")
                 progress.advance(overall)
                 continue
-            progress.advance(paper_task)
-            _analyze_and_save(paper, model, lib, progress=progress, task_id=paper_task)
+            _analyze_and_save(paper, model, lib, progress=progress, task_id=paper_task, cn=cn)
             progress.advance(paper_task)
             progress.advance(overall)
 
@@ -253,8 +245,9 @@ def _pipeline_loop(selected_ids: list[str], model: str, lib: PaperLibrary) -> No
 @agent.command()
 @click.argument("query")
 @click.option("--count", default=20, show_default=True, help="Number of papers to search for.")
+@click.option("--cn", is_flag=True, help="Summarize in Chinese.")
 @click.pass_context
-def pipeline(ctx: click.Context, query: str, count: int) -> None:
+def pipeline(ctx: click.Context, query: str, count: int, cn: bool) -> None:
     """Search → select → auto-analyze and save (with citation counts)."""
     _require_auth()
     config = get_config(ctx)
@@ -274,7 +267,7 @@ def pipeline(ctx: click.Context, query: str, count: int) -> None:
         console.print("[yellow]Invalid selection.[/yellow]")
         return
     console.print()
-    _pipeline_loop(selected_ids, config.default_model, lib)
+    _pipeline_loop(selected_ids, config.default_model, lib, cn=cn)
 
 
 def _paper_year(p: Paper) -> int | None:

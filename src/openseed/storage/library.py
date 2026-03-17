@@ -24,6 +24,9 @@ class PaperLibrary:
         self._papers_cache: list[Paper] | None = None
         self._experiments_cache: list[Experiment] | None = None
         self._watches_cache: list[ArxivWatch] | None = None
+        self._papers_by_id: dict[str, Paper] | None = None
+        self._papers_by_arxiv: dict[str, Paper] | None = None
+        self._sessions_cache: list[ResearchSession] | None = None
 
     @property
     def _research_path(self) -> Path:
@@ -43,6 +46,8 @@ class PaperLibrary:
             return []
         data = json.loads(self._papers_path.read_text())
         self._papers_cache = [Paper.model_validate(d) for d in data]
+        self._papers_by_id = {p.id: p for p in self._papers_cache}
+        self._papers_by_arxiv = {p.arxiv_id: p for p in self._papers_cache if p.arxiv_id}
         return self._papers_cache
 
     def _save_papers(self, papers: list[Paper]) -> None:
@@ -51,23 +56,24 @@ class PaperLibrary:
             json.dumps([p.model_dump(mode="json") for p in papers], indent=2, default=str),
         )
         self._papers_cache = papers
+        self._papers_by_id = {p.id: p for p in papers}
+        self._papers_by_arxiv = {p.arxiv_id: p for p in papers if p.arxiv_id}
 
     def add_paper(self, paper: Paper) -> bool:
         """Add paper; skip if same arxiv_id or url already exists. Returns True if added."""
-        papers = self._load_papers()
-        if paper.arxiv_id and any(p.arxiv_id == paper.arxiv_id for p in papers):
+        self._load_papers()
+        if paper.arxiv_id and (self._papers_by_arxiv or {}).get(paper.arxiv_id):
             return False
-        if paper.url and any(p.url == paper.url for p in papers):
+        if paper.url and any(p.url == paper.url for p in self._papers_cache or []):
             return False
+        papers = list(self._papers_cache or [])
         papers.append(paper)
         self._save_papers(papers)
         return True
 
     def get_paper(self, paper_id: str) -> Paper | None:
-        for p in self._load_papers():
-            if p.id == paper_id:
-                return p
-        return None
+        self._load_papers()
+        return (self._papers_by_id or {}).get(paper_id)
 
     def list_papers(self) -> list[Paper]:
         return self._load_papers()
@@ -90,8 +96,21 @@ class PaperLibrary:
         raise KeyError(f"Paper {paper.id} not found")
 
     def search_papers(self, query: str) -> list[Paper]:
-        q = query.lower()
-        return [p for p in self._load_papers() if q in p.title.lower() or q in p.abstract.lower()]
+        tokens = query.lower().split()
+        if not tokens:
+            return []
+
+        def _text(p: Paper) -> str:
+            authors = " ".join(a.name for a in p.authors)
+            tags = " ".join(t.name for t in p.tags)
+            return " ".join([p.title, p.abstract, p.note, p.summary or "", authors, tags]).lower()
+
+        def _score(p: Paper) -> int:
+            title_l = p.title.lower()
+            return sum(2 if t in title_l else 1 for t in tokens)
+
+        matches = [p for p in self._load_papers() if all(t in _text(p) for t in tokens)]
+        return sorted(matches, key=_score, reverse=True)
 
     # ── Experiments ───────────────────────────────────────────
 
@@ -185,16 +204,22 @@ class PaperLibrary:
     # ── Research Sessions ─────────────────────────────────────
 
     def list_research_sessions(self) -> list[ResearchSession]:
+        if self._sessions_cache is not None:
+            return self._sessions_cache
         if not self._research_path.exists():
             return []
         try:
-            return [ResearchSession(**d) for d in json.loads(self._research_path.read_text())]
+            self._sessions_cache = [
+                ResearchSession(**d) for d in json.loads(self._research_path.read_text())
+            ]
+            return self._sessions_cache
         except Exception:
             return []
 
     def add_research_session(self, session: ResearchSession) -> None:
         sessions = self.list_research_sessions()
         sessions.append(session)
+        self._sessions_cache = sessions
         self._atomic_write(
             self._research_path,
             json.dumps([s.model_dump(mode="json") for s in sessions], indent=2, default=str),
@@ -224,6 +249,18 @@ class PaperLibrary:
         slug = "_".join(sorted(paper_ids)[:4])
         path = summaries_dir / f"synthesis_{slug}.md"
         new_content = f"# Synthesis\n\n{content}\n"
+        if path.exists() and path.read_text(encoding="utf-8") == new_content:
+            return path
+        path.write_text(new_content, encoding="utf-8")
+        return path
+
+    def save_report(self, session_id: str, topic: str, content: str) -> Path:
+        """Write research report to summaries/report_{slug}_{session_id}.md."""
+        summaries_dir = self._dir.parent / "summaries"
+        summaries_dir.mkdir(parents=True, exist_ok=True)
+        slug = topic.lower().replace(" ", "_")[:40]
+        path = summaries_dir / f"report_{slug}_{session_id}.md"
+        new_content = f"# Research Report: {topic}\n\n{content}\n"
         if path.exists() and path.read_text(encoding="utf-8") == new_content:
             return path
         path.write_text(new_content, encoding="utf-8")
