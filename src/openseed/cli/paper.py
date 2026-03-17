@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
 import click
+from rich.columns import Columns
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
@@ -56,23 +59,45 @@ def _arxiv_year(arxiv_id: str | None) -> int | None:
     return (2000 + int(m.group(1))) if m else None
 
 
+def _score_bar(score: float, max_score: float, width: int = 12) -> str:
+    ratio = min(score / max_score, 1.0) if max_score else 0.0
+    filled = round(ratio * width)
+    return f"[green]{'█' * filled}[/green][dim]{'░' * (width - filled)}[/dim]"
+
+
+def _year_chart(results: list[dict]) -> Table | None:
+    counts = Counter(r.get("year") for r in results if r.get("year"))
+    if not counts:
+        return None
+    max_count = max(counts.values())
+    table = Table(title="Year distribution", show_header=False, box=None, padding=(0, 1))
+    table.add_column("Year", style="cyan", width=6)
+    table.add_column("Bar", no_wrap=True)
+    table.add_column("n", style="dim", width=4, justify="right")
+    for year in sorted(counts):
+        bar = "█" * round(counts[year] / max_count * 20)
+        table.add_row(str(year), f"[green]{bar}[/green]", str(counts[year]))
+    return table
+
+
 def _build_search_table(results: list[dict], since: int | None) -> Table:
     title = "Search results" + (f" (since {since})" if since else "")
+    max_score = max((r.get("score", 0) for r in results), default=1) or 1
     table = Table(title=title, show_lines=True)
     table.add_column("#", style="dim", width=4)
-    table.add_column("Title", style="bold", max_width=42)
-    table.add_column("Relevance", max_width=30)
-    table.add_column("Score", justify="right", width=7)
+    table.add_column("Title", style="bold", max_width=38)
+    table.add_column("Relevance", max_width=28)
+    table.add_column("Rank", width=14, no_wrap=True)
     table.add_column("Year", justify="right", width=6)
     table.add_column("Cite", justify="right", width=7)
-    table.add_column("Authors", style="dim", max_width=20)
+    table.add_column("Authors", style="dim", max_width=18)
     table.add_column("ArXiv ID", style="cyan", width=13)
     for i, r in enumerate(results, 1):
         table.add_row(
             str(i),
             r["title"],
             r["relevance"],
-            f"{r.get('score', 0):.1f}",
+            _score_bar(r.get("score", 0), max_score),
             str(r.get("year", "")),
             _fmt_citations(r["citations"]),
             r["authors"],
@@ -100,7 +125,7 @@ def _summarize_cn(p: Paper, config, lib) -> None:
             p.abstract or p.title, cn=True
         )
     md_path = lib.save_summary(p)
-    console.print(Panel(p.summary, title=p.title[:60], border_style="green"))
+    console.print(Panel(Markdown(p.summary), title=p.title[:60], border_style="green"))
     console.print(f"[dim]Saved → {md_path}[/dim]")
 
 
@@ -285,7 +310,12 @@ def search(
     if not results:
         console.print("[dim]No results found.[/dim]")
         return
-    console.print(_build_search_table(results, since))
+    table = _build_search_table(results, since)
+    chart = _year_chart(results)
+    if chart:
+        console.print(Columns([table, chart], equal=False, expand=False))
+    else:
+        console.print(table)
     if download:
         lib = get_library(ctx)
         console.print(f"\n[bold]Downloading top {min(10, len(results))} papers…[/bold]\n")

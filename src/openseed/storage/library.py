@@ -186,6 +186,15 @@ class PaperLibrary:
         path.write_text(f"# {paper.title}\n\n{paper.summary}\n", encoding="utf-8")
         return path
 
+    def save_synthesis(self, paper_ids: list[str], content: str) -> Path:
+        """Write synthesis markdown to ~/.openseed/summaries/synthesis_{ids}.md."""
+        summaries_dir = self._dir.parent / "summaries"
+        summaries_dir.mkdir(parents=True, exist_ok=True)
+        slug = "_".join(paper_ids[:4])
+        path = summaries_dir / f"synthesis_{slug}.md"
+        path.write_text(f"# Synthesis\n\n{content}\n", encoding="utf-8")
+        return path
+
     # ── Helpers ───────────────────────────────────────────────
 
     @staticmethod

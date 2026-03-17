@@ -270,6 +270,8 @@ def synthesize(ctx: click.Context, paper_ids: tuple[str, ...]) -> None:
     with console.status("[cyan]Synthesizing…[/cyan]"):
         result = synthesize_papers(texts, config.default_model)
     console.print(Panel(Markdown(result), title="Synthesis", border_style="cyan"))
+    md_path = lib.save_synthesis(list(paper_ids), result)
+    console.print(f"[dim]Saved → {md_path}[/dim]")
 
 
 def _resolve_codegen_path(config, paper_id: str, out_path: str | None) -> Path:
