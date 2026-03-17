@@ -199,12 +199,14 @@ def tag(ctx: click.Context, paper_id: str, name: str, color: str) -> None:
     console.print(f"[green]✓[/green] Tagged [bold]{p.title}[/bold] with '{name}'")
 
 
-def _summarize_cn(p, config) -> None:
+def _summarize_cn(p, config, lib) -> None:
     with console.status(f"[cyan]Summarizing '{p.title[:40]}…'[/cyan]"):
         p.summary = PaperReader(model=config.default_model).summarize_paper(
             p.abstract or p.title, cn=True
         )
+    md_path = lib.save_summary(p)
     console.print(Panel(p.summary, title=p.title[:60], border_style="green"))
+    console.print(f"[dim]Saved → {md_path}[/dim]")
 
 
 def _search_download(ctx: click.Context, results: list[dict], cn: bool = False) -> None:
@@ -220,7 +222,7 @@ def _search_download(ctx: click.Context, results: list[dict], cn: bool = False) 
             continue
         _download_and_extract(ctx, p, r["arxiv_id"])
         if cn:
-            _summarize_cn(p, config)
+            _summarize_cn(p, config, lib)
         added = lib.add_paper(p)
         status = "[green]✓ Added[/green]" if added else "[yellow]Already exists[/yellow]"
         console.print(f"{status} [bold]{p.title}[/bold] (id: {p.id})")

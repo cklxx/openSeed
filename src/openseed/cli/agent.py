@@ -80,8 +80,10 @@ def summarize(ctx: click.Context, paper_id: str, cn: bool) -> None:
 
     p.summary = summary
     lib.update_paper(p)
+    md_path = lib.save_summary(p)
 
     console.print(Panel(Markdown(summary), title=f"Summary: {p.title}", border_style="green"))
+    console.print(f"[dim]Saved → {md_path}[/dim]")
 
 
 @agent.command()
@@ -201,10 +203,12 @@ def _analyze_and_save(
     if not added:
         console.print(f"[yellow]Skipped (already exists)[/yellow] {paper.title}")
         return
+    md_path = lib.save_summary(paper)
     tags_str = ", ".join(t.name for t in paper.tags)
     console.print(f"[green]✓[/green] [bold]{paper.title}[/bold]")
     console.print(f"   Tags: [yellow]{tags_str}[/yellow]  •  id: {paper.id}")
     console.print(Panel(Markdown(paper.summary), border_style="green"))
+    console.print(f"[dim]Saved → {md_path}[/dim]")
 
 
 @agent.command()

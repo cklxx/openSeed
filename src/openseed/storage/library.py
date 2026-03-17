@@ -175,6 +175,17 @@ class PaperLibrary:
         self._save_watches(filtered)
         return True
 
+    # ── Summaries ─────────────────────────────────────────────
+
+    def save_summary(self, paper: Paper) -> Path:
+        """Write paper.summary to ~/.openseed/summaries/{arxiv_id|id}.md and return the path."""
+        summaries_dir = self._dir.parent / "summaries"
+        summaries_dir.mkdir(parents=True, exist_ok=True)
+        slug = (paper.arxiv_id or paper.id).replace("/", "_")
+        path = summaries_dir / f"{slug}.md"
+        path.write_text(f"# {paper.title}\n\n{paper.summary}\n", encoding="utf-8")
+        return path
+
     # ── Helpers ───────────────────────────────────────────────
 
     @staticmethod
