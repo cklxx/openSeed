@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 from collections.abc import Callable
+from datetime import date
 
 import httpx
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
@@ -158,13 +160,33 @@ def discover_papers(search_query: str, model: str, count: int = 10) -> list[dict
     return _parse_ranked_lines(raw)
 
 
+def _freshness_score(arxiv_id: str, citations: int) -> tuple[int, float]:
+    """Return (pub_year, score) where score = citations^0.6 * (1 + freshness).
+
+    Freshness decays exponentially with a half-life of 18 months.
+    ArXiv IDs encode publication date: YYMM.xxxxx (post-2015) or older 4-digit format.
+    """
+    match = re.match(r"^(\d{2})(\d{2})\.", arxiv_id)
+    if match:
+        yy, mm = int(match.group(1)), int(match.group(2))
+        year = 2000 + yy if yy <= 99 else yy
+        pub = date(year, max(1, min(mm, 12)), 1)
+    else:
+        pub = date(2010, 1, 1)  # unknown — treat as old
+    today = date.today()
+    age_months = max((today.year - pub.year) * 12 + (today.month - pub.month), 1)
+    freshness = math.exp(-age_months / 18)
+    return pub.year, citations**0.6 * (1 + freshness)
+
+
 def enrich_citations(papers: list[dict]) -> list[dict]:
-    """Phase 2: Replace estimated citations with real counts from Semantic Scholar."""
+    """Phase 2: Replace estimated citations with real counts; rank by freshness-weighted score."""
     real = _fetch_citations([p["arxiv_id"] for p in papers])
     for p in papers:
         if p["arxiv_id"] in real:
             p["citations"] = real[p["arxiv_id"]]
-    return sorted(papers, key=lambda x: x["citations"], reverse=True)
+        p["year"], p["score"] = _freshness_score(p["arxiv_id"], p["citations"])
+    return sorted(papers, key=lambda x: x["score"], reverse=True)
 
 
 def search_papers_ranked(search_query: str, model: str, count: int = 10) -> list[dict]:

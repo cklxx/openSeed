@@ -220,13 +220,15 @@ def search(ctx: click.Context, query: str, count: int, add: bool) -> None:
         console.print("[dim]No results found.[/dim]")
         return
 
-    table = Table(title=f"Search: {query} (by citations)", show_lines=True)
+    table = Table(title=f"Search: {query} (by freshness-weighted score)", show_lines=True)
     table.add_column("#", style="dim", width=4)
     table.add_column("ArXiv ID", style="cyan", width=13)
-    table.add_column("Title", style="bold", max_width=42)
-    table.add_column("Authors", max_width=24)
+    table.add_column("Title", style="bold", max_width=38)
+    table.add_column("Authors", max_width=20)
+    table.add_column("Year", justify="right", width=6)
     table.add_column("Cite", justify="right", width=7)
-    table.add_column("Relevance", max_width=30)
+    table.add_column("Score", justify="right", width=7)
+    table.add_column("Relevance", max_width=28)
 
     for i, r in enumerate(results, 1):
         table.add_row(
@@ -234,7 +236,9 @@ def search(ctx: click.Context, query: str, count: int, add: bool) -> None:
             r["arxiv_id"],
             r["title"],
             r["authors"],
+            str(r.get("year", "")),
             _fmt_citations(r["citations"]),
+            f"{r.get('score', 0):.1f}",
             r["relevance"],
         )
 
