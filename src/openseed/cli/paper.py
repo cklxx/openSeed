@@ -219,7 +219,9 @@ def search(ctx: click.Context, query: str, count: int, since: int | None, add: b
         def _on_step(label: str) -> None:
             status.update(f"[cyan]{label}[/cyan]")
 
-        papers = discover_papers(query, model=config.default_model, count=count, on_step=_on_step)
+        papers = discover_papers(
+            query, model=config.default_model, count=count, since_year=since, on_step=_on_step
+        )
         status.update(f"[cyan]Found {len(papers)} papers — verifying citations…[/cyan]")
         results = enrich_citations(papers)
 

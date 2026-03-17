@@ -143,15 +143,20 @@ def _parse_ranked_lines(raw: str) -> list[dict]:
 
 
 def discover_papers(
-    search_query: str, model: str, count: int = 10, on_step: Callable[[str], None] | None = None
+    search_query: str,
+    model: str,
+    count: int = 10,
+    since_year: int | None = None,
+    on_step: Callable[[str], None] | None = None,
 ) -> list[dict]:
     """Phase 1: Claude web search → parsed paper list with estimated citations."""
+    recency = f" published in {since_year} or later" if since_year else ""
+    scope = f"recent papers{recency}" if since_year else "highly-cited, high-impact papers"
     system = (
         "You are a research paper discovery assistant with web search access. "
-        f"Find {count} highly-cited, high-impact papers about the given topic. "
+        f"Find {count} {scope} about the given topic. "
         "Strategy: first identify core concepts and related terms, then search "
-        "Semantic Scholar and Google Scholar for the most cited papers in this area. "
-        "Include both seminal foundational works and recent influential papers. "
+        "Semantic Scholar and Google Scholar for the most relevant papers in this area. "
         "Output ONLY pipe-separated lines — no markdown, no headers, no explanation:\n"
         "ARXIV_ID|ESTIMATED_CITATIONS|TITLE|FIRST_AUTHOR_ET_AL|ONE_LINE_RELEVANCE\n"
         "Example: 1706.03762|120000|Attention Is All You Need"
