@@ -23,7 +23,12 @@ from openseed.agent.reader import (
     synthesize_papers,
 )
 from openseed.auth import has_anthropic_auth
-from openseed.cli._helpers import get_config, get_library, render_paper_visuals, require_paper
+from openseed.cli._helpers import (
+    get_config,
+    get_library,
+    render_paper_visuals,
+    require_paper,
+)
 from openseed.models.paper import Paper, Tag
 from openseed.services.arxiv import fetch_paper_metadata
 from openseed.storage.library import PaperLibrary
@@ -193,6 +198,8 @@ def _analyze_and_save(
     console.print(f"   Tags: [yellow]{tags_str}[/yellow]  •  id: {paper.id}")
     console.print(Panel(Markdown(paper.summary), border_style="green"))
     console.print(f"[dim]Saved → {md_path}[/dim]")
+    step("Extracting visuals…")
+    render_paper_visuals(extract_paper_visuals(text, model), console)
 
 
 def _search_with_status(query: str, model: str, count: int) -> str:

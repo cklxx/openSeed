@@ -105,10 +105,10 @@ def _run_discover(query: str, config, count: int, since: int | None) -> list[dic
         return enrich_citations(papers)
 
 
-def _summarize_cn(p: Paper, config, lib) -> None:
+def _summarize(p: Paper, config, lib, cn: bool = False) -> None:
     with console.status(f"[cyan]Summarizing '{p.title[:40]}…'[/cyan]"):
         p.summary = PaperReader(model=config.default_model).summarize_paper(
-            p.abstract or p.title, cn=True
+            p.abstract or p.title, cn=cn
         )
     md_path = lib.save_summary(p)
     console.print(Panel(Markdown(p.summary), title=p.title[:60], border_style="green"))
@@ -125,8 +125,7 @@ def _fetch_and_add(ctx: click.Context, r: dict, lib, config, cn: bool) -> None:
         console.print(f"[red]Failed to fetch {r['arxiv_id']}: {exc}[/red]")
         return
     _download_and_extract(ctx, p, r["arxiv_id"])
-    if cn:
-        _summarize_cn(p, config, lib)
+    _summarize(p, config, lib, cn=cn)
     added = lib.add_paper(p)
     status = "[green]✓ Added[/green]" if added else "[yellow]Already exists[/yellow]"
     console.print(f"{status} [bold]{p.title}[/bold] (id: {p.id})")
