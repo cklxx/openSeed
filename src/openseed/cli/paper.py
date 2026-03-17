@@ -199,6 +199,51 @@ def tag(ctx: click.Context, paper_id: str, name: str, color: str) -> None:
     console.print(f"[green]✓[/green] Tagged [bold]{p.title}[/bold] with '{name}'")
 
 
+def _parse_selection(raw: str, count: int) -> list[int]:
+    if raw.strip().lower() == "all":
+        return list(range(count))
+    indices = []
+    for part in raw.split(","):
+        part = part.strip()
+        if "-" in part:
+            lo, _, hi = part.partition("-")
+            try:
+                for i in range(int(lo) - 1, int(hi)):
+                    if 0 <= i < count:
+                        indices.append(i)
+            except ValueError:
+                pass
+        else:
+            try:
+                idx = int(part) - 1
+                if 0 <= idx < count:
+                    indices.append(idx)
+            except ValueError:
+                pass
+    return indices
+
+
+def _search_download(ctx: click.Context, results: list[dict]) -> None:
+    raw = click.prompt("Select papers to add + download PDF (e.g. 1,3 or 1-5 or all, q to skip)")
+    if raw.strip().lower() == "q":
+        return
+    selected = [results[i] for i in _parse_selection(raw, len(results))]
+    if not selected:
+        console.print("[yellow]Invalid selection.[/yellow]")
+        return
+    lib = _get_library(ctx)
+    for r in selected:
+        try:
+            p = asyncio.run(fetch_paper_metadata(r["arxiv_id"]))
+        except Exception as exc:
+            console.print(f"[red]Failed to fetch {r['arxiv_id']}: {exc}[/red]")
+            continue
+        _download_and_extract(ctx, p, r["arxiv_id"])
+        added = lib.add_paper(p)
+        status = "[green]✓ Added[/green]" if added else "[yellow]Already exists[/yellow]"
+        console.print(f"{status} [bold]{p.title}[/bold] (id: {p.id})")
+
+
 def _fmt_citations(n: int) -> str:
     if n >= 1000:
         return f"{n / 1000:.1f}k"
@@ -210,8 +255,11 @@ def _fmt_citations(n: int) -> str:
 @click.option("--count", default=10, show_default=True, help="Number of results to find.")
 @click.option("--since", default=None, type=int, metavar="YEAR", help="Filter by publication year.")
 @click.option("--add", is_flag=True, help="Auto-add the top result to the library.")
+@click.option("--download", is_flag=True, help="Select papers to add and download PDFs.")
 @click.pass_context
-def search(ctx: click.Context, query: str, count: int, since: int | None, add: bool) -> None:
+def search(
+    ctx: click.Context, query: str, count: int, since: int | None, add: bool, download: bool
+) -> None:
     """Search for papers using AI, ranked by freshness-weighted score."""
     config = ctx.obj["config"]
     with console.status("[cyan]Searching…[/cyan]") as status:
@@ -256,6 +304,10 @@ def search(ctx: click.Context, query: str, count: int, since: int | None, add: b
         )
 
     console.print(table)
+
+    if download:
+        _search_download(ctx, results)
+        return
 
     if add and results:
         lib = _get_library(ctx)
