@@ -45,3 +45,8 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+asyncio_mode = "auto"
+markers = [
+    "integration: tests requiring real network access (ArXiv, Semantic Scholar)",
+    "slow: tests calling Claude API (expensive, requires ANTHROPIC_API_KEY)",
+]

@@ -2,34 +2,40 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
 
 import toml
 from pydantic import BaseModel, Field
 
-_DEFAULT_DIR = Path.home() / ".openseed"
+
+def _config_dir() -> Path:
+    """Return config base dir, overridable via OPENSEED_CONFIG_DIR env var."""
+    env = os.environ.get("OPENSEED_CONFIG_DIR")
+    return Path(env) if env else Path.home() / ".openseed"
 
 
 class OpenSeedConfig(BaseModel):
     """Global configuration."""
 
-    library_dir: Path = Field(default_factory=lambda: _DEFAULT_DIR / "library")
-    config_dir: Path = Field(default_factory=lambda: _DEFAULT_DIR)
+    library_dir: Path = Field(default_factory=lambda: _config_dir() / "library")
+    config_dir: Path = Field(default_factory=_config_dir)
     default_model: str = "claude-sonnet-4-6"
 
 
 def _config_path() -> Path:
-    return _DEFAULT_DIR / "config.toml"
+    return _config_dir() / "config.toml"
 
 
 def load_config() -> OpenSeedConfig:
     """Load config from disk, returning defaults if missing."""
-    path = _config_path()
+    base = _config_dir()
+    path = base / "config.toml"
     if path.exists():
         data = tomllib.loads(path.read_text())
         return OpenSeedConfig(**data)
-    return OpenSeedConfig()
+    return OpenSeedConfig(library_dir=base / "library", config_dir=base)
 
 
 def save_config(config: OpenSeedConfig) -> None:

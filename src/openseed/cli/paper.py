@@ -176,7 +176,9 @@ def add(ctx: click.Context, url: str, fetch_pdf: bool) -> None:
             _download_and_extract(ctx, p, arxiv_id)
     else:
         p = Paper(title=url, url=url)
-    lib.add_paper(p)
+    if not lib.add_paper(p):
+        console.print(f"[yellow]Already in library:[/yellow] {p.title}")
+        return
     console.print(f"[green]✓[/green] Added [bold]{p.title}[/bold] (id: {p.id})")
 
 
