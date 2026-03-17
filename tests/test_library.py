@@ -1,5 +1,7 @@
 """Tests for the paper library storage."""
 
+import pytest
+
 from openseed.models.experiment import Experiment
 from openseed.models.paper import Paper
 from openseed.storage.library import PaperLibrary
@@ -36,6 +38,10 @@ class TestPaperLibrary:
         found = tmp_library.get_paper(sample_paper.id)
         assert found is not None
         assert found.status == "reading"
+
+    def test_update_paper_not_found(self, tmp_library: PaperLibrary, sample_paper: Paper) -> None:
+        with pytest.raises(KeyError, match=sample_paper.id):
+            tmp_library.update_paper(sample_paper)
 
     def test_search(self, tmp_library: PaperLibrary, sample_paper: Paper) -> None:
         tmp_library.add_paper(sample_paper)

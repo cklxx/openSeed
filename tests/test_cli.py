@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,7 +25,7 @@ class TestCLI:
     def test_version(self, tmp_path: Path) -> None:
         result = self._invoke(["--version"], tmp_path)
         assert result.exit_code == 0
-        assert "0.1.0" in result.output
+        assert version("openseed") in result.output
 
     def test_init(self, tmp_path: Path) -> None:
         result = self._invoke(["init"], tmp_path)
