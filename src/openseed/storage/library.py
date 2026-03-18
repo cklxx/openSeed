@@ -1,9 +1,25 @@
-"""JSON-based paper and experiment library."""
+"""SQLite-backed paper and experiment library.
+
+Schema (hybrid: indexed columns + JSON blob):
+┌─────────────────────────────────────────────────────────────┐
+│ papers: id PK, arxiv_id UNIQUE, title, status, added_at,   │
+│         data (full Pydantic JSON)                           │
+│ experiments: id PK, name, paper_id, data                    │
+│ watches: id PK, query, data                                 │
+│ research_sessions: id PK, topic, created_at, data           │
+│ paper_edges: (source_id, target_id, edge_type) PK,          │
+│              weight, metadata, created_at                    │
+│ papers_fts: FTS5 virtual table (title, abstract, summary,   │
+│             authors, tags) — synced via triggers             │
+│ schema_version: version INTEGER                              │
+└─────────────────────────────────────────────────────────────┘
+"""
 
 from __future__ import annotations
 
 import json
-import tempfile
+import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 from openseed.models.experiment import Experiment
@@ -11,98 +27,207 @@ from openseed.models.paper import Paper
 from openseed.models.research import ResearchSession
 from openseed.models.watch import ArxivWatch
 
+_SCHEMA_VERSION = 1
+
+_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS papers (
+    id       TEXT PRIMARY KEY,
+    arxiv_id TEXT UNIQUE,
+    title    TEXT NOT NULL,
+    status   TEXT NOT NULL DEFAULT 'unread',
+    added_at TEXT NOT NULL,
+    data     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_papers_status ON papers(status);
+
+CREATE TABLE IF NOT EXISTS experiments (
+    id       TEXT PRIMARY KEY,
+    name     TEXT NOT NULL,
+    paper_id TEXT,
+    data     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS watches (
+    id    TEXT PRIMARY KEY,
+    query TEXT NOT NULL,
+    data  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research_sessions (
+    id         TEXT PRIMARY KEY,
+    topic      TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    data       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS paper_edges (
+    source_id  TEXT NOT NULL,
+    target_id  TEXT NOT NULL,
+    edge_type  TEXT NOT NULL DEFAULT 'cites',
+    weight     REAL DEFAULT 1.0,
+    metadata   TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (source_id, target_id, edge_type)
+);
+CREATE INDEX IF NOT EXISTS idx_edges_source ON paper_edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON paper_edges(target_id);
+
+CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts USING fts5(
+    title, abstract, summary, authors, tags
+);
+"""
+
+
+def _fts_text(p: Paper) -> tuple[str, str, str, str, str]:
+    """Extract FTS-indexable text fields from a Paper."""
+    authors = " ".join(a.name for a in p.authors)
+    tags = " ".join(t.name for t in p.tags)
+    return (p.title, p.abstract, p.summary or "", authors, tags)
+
+
+def _paper_to_row(p: Paper) -> tuple:
+    return (p.id, p.arxiv_id, p.title, p.status, p.added_at.isoformat(), _dump(p))
+
+
+def _row_to_paper(data_json: str) -> Paper:
+    return Paper.model_validate(json.loads(data_json))
+
+
+def _dump(model) -> str:
+    return json.dumps(model.model_dump(mode="json"), default=str)
+
 
 class PaperLibrary:
-    """CRUD operations for papers and experiments backed by JSON files."""
+    """CRUD operations for papers and experiments backed by SQLite."""
 
     def __init__(self, library_dir: Path) -> None:
         self._dir = Path(library_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
-        self._papers_path = self._dir / "papers.json"
-        self._experiments_path = self._dir / "experiments.json"
-        self._watches_path = self._dir / "watches.json"
-        self._papers_cache: list[Paper] | None = None
-        self._experiments_cache: list[Experiment] | None = None
-        self._watches_cache: list[ArxivWatch] | None = None
-        self._papers_by_id: dict[str, Paper] | None = None
-        self._papers_by_arxiv: dict[str, Paper] | None = None
-        self._sessions_cache: list[ResearchSession] | None = None
+        self._db_path = self._dir / "library.db"
+        self._conn = self._connect()
+        self._ensure_schema()
+        self._auto_migrate()
 
-    @property
-    def _research_path(self) -> Path:
-        return self._dir / "research_sessions.json"
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
 
-    def _invalidate_cache(self) -> None:
-        self._papers_cache = None
-        self._experiments_cache = None
-        self._watches_cache = None
+    def _ensure_schema(self) -> None:
+        self._conn.executescript(_CREATE_SQL)
+        row = self._conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        if row is None:
+            self._conn.execute("INSERT INTO schema_version VALUES (?)", (_SCHEMA_VERSION,))
+            self._conn.commit()
+
+    def _auto_migrate(self) -> None:
+        """Detect legacy JSON files and migrate them into SQLite."""
+        from openseed.storage.migrate import migrate_json_to_sqlite
+
+        migrate_json_to_sqlite(self._dir, self._conn)
 
     # ── Papers ────────────────────────────────────────────────
 
-    def _load_papers(self) -> list[Paper]:
-        if self._papers_cache is not None:
-            return self._papers_cache
-        if not self._papers_path.exists():
-            return []
-        data = json.loads(self._papers_path.read_text())
-        self._papers_cache = [Paper.model_validate(d) for d in data]
-        self._papers_by_id = {p.id: p for p in self._papers_cache}
-        self._papers_by_arxiv = {p.arxiv_id: p for p in self._papers_cache if p.arxiv_id}
-        return self._papers_cache
-
-    def _save_papers(self, papers: list[Paper]) -> None:
-        self._atomic_write(
-            self._papers_path,
-            json.dumps([p.model_dump(mode="json") for p in papers], indent=2, default=str),
-        )
-        self._papers_cache = papers
-        self._papers_by_id = {p.id: p for p in papers}
-        self._papers_by_arxiv = {p.arxiv_id: p for p in papers if p.arxiv_id}
-
     def add_paper(self, paper: Paper) -> bool:
-        """Add paper; skip if same arxiv_id or url already exists. Returns True if added."""
-        self._load_papers()
-        if paper.arxiv_id and (self._papers_by_arxiv or {}).get(paper.arxiv_id):
-            return False
-        if paper.url and any(p.url == paper.url for p in self._papers_cache or []):
-            return False
-        papers = list(self._papers_cache or [])
-        papers.append(paper)
-        self._save_papers(papers)
+        """Add paper; skip if same arxiv_id or url already exists."""
+        if paper.arxiv_id:
+            existing = self._conn.execute(
+                "SELECT 1 FROM papers WHERE arxiv_id = ?", (paper.arxiv_id,)
+            ).fetchone()
+            if existing:
+                return False
+        if paper.url:
+            row = self._conn.execute(
+                "SELECT 1 FROM papers WHERE json_extract(data, '$.url') = ?",
+                (paper.url,),
+            ).fetchone()
+            if row:
+                return False
+        self._conn.execute(
+            "INSERT INTO papers (id, arxiv_id, title, status, added_at, data) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            _paper_to_row(paper),
+        )
+        rowid = self._conn.execute("SELECT rowid FROM papers WHERE id = ?", (paper.id,)).fetchone()[
+            0
+        ]
+        self._conn.execute(
+            "INSERT INTO papers_fts(rowid, title, abstract, summary, authors, tags) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (rowid, *_fts_text(paper)),
+        )
+        self._conn.commit()
         return True
 
     def get_paper(self, paper_id: str) -> Paper | None:
-        self._load_papers()
-        return (self._papers_by_id or {}).get(paper_id)
+        row = self._conn.execute("SELECT data FROM papers WHERE id = ?", (paper_id,)).fetchone()
+        return _row_to_paper(row[0]) if row else None
 
     def get_paper_by_arxiv(self, arxiv_id: str) -> Paper | None:
-        self._load_papers()
-        return (self._papers_by_arxiv or {}).get(arxiv_id)
+        row = self._conn.execute(
+            "SELECT data FROM papers WHERE arxiv_id = ?", (arxiv_id,)
+        ).fetchone()
+        return _row_to_paper(row[0]) if row else None
 
     def list_papers(self) -> list[Paper]:
-        return self._load_papers()
+        rows = self._conn.execute("SELECT data FROM papers").fetchall()
+        return [_row_to_paper(r[0]) for r in rows]
 
     def remove_paper(self, paper_id: str) -> bool:
-        papers = self._load_papers()
-        filtered = [p for p in papers if p.id != paper_id]
-        if len(filtered) == len(papers):
+        row = self._conn.execute("SELECT rowid FROM papers WHERE id = ?", (paper_id,)).fetchone()
+        if row is None:
             return False
-        self._save_papers(filtered)
+        rowid = row[0]
+        self._conn.execute("DELETE FROM papers WHERE id = ?", (paper_id,))
+        self._conn.execute("DELETE FROM papers_fts WHERE rowid = ?", (rowid,))
+        self._conn.commit()
         return True
 
     def update_paper(self, paper: Paper) -> None:
-        papers = self._load_papers()
-        for i, p in enumerate(papers):
-            if p.id == paper.id:
-                papers[i] = paper
-                self._save_papers(papers)
-                return
-        raise KeyError(f"Paper {paper.id} not found")
+        row = self._conn.execute("SELECT rowid FROM papers WHERE id = ?", (paper.id,)).fetchone()
+        if row is None:
+            raise KeyError(f"Paper {paper.id} not found")
+        rowid = row[0]
+        self._conn.execute(
+            "UPDATE papers SET arxiv_id=?, title=?, status=?, added_at=?, data=? WHERE id = ?",
+            (
+                paper.arxiv_id,
+                paper.title,
+                paper.status,
+                paper.added_at.isoformat(),
+                _dump(paper),
+                paper.id,
+            ),
+        )
+        self._conn.execute("DELETE FROM papers_fts WHERE rowid = ?", (rowid,))
+        self._conn.execute(
+            "INSERT INTO papers_fts(rowid, title, abstract, summary, authors, tags) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (rowid, *_fts_text(paper)),
+        )
+        self._conn.commit()
 
     def search_papers(self, query: str) -> list[Paper]:
-        tokens = query.lower().split()
+        tokens = query.strip().split()
         if not tokens:
             return []
+        fts_query = " AND ".join(f'"{t}"' for t in tokens)
+        try:
+            rows = self._conn.execute(
+                "SELECT p.data, rank FROM papers_fts f "
+                "JOIN papers p ON p.rowid = f.rowid "
+                "WHERE papers_fts MATCH ? ORDER BY rank",
+                (fts_query,),
+            ).fetchall()
+            return [_row_to_paper(r[0]) for r in rows]
+        except sqlite3.OperationalError:
+            return self._fallback_search(tokens)
+
+    def _fallback_search(self, tokens: list[str]) -> list[Paper]:
+        """Token-based search when FTS fails (e.g. special characters)."""
 
         def _text(p: Paper) -> str:
             authors = " ".join(a.name for a in p.authors)
@@ -113,129 +238,187 @@ class PaperLibrary:
             title_l = p.title.lower()
             return sum(2 if t in title_l else 1 for t in tokens)
 
-        matches = [p for p in self._load_papers() if all(t in _text(p) for t in tokens)]
+        low = [t.lower() for t in tokens]
+        matches = [p for p in self.list_papers() if all(t in _text(p) for t in low)]
         return sorted(matches, key=_score, reverse=True)
 
     # ── Experiments ───────────────────────────────────────────
 
-    def _load_experiments(self) -> list[Experiment]:
-        if self._experiments_cache is not None:
-            return self._experiments_cache
-        if not self._experiments_path.exists():
-            return []
-        data = json.loads(self._experiments_path.read_text())
-        self._experiments_cache = [Experiment.model_validate(d) for d in data]
-        return self._experiments_cache
-
-    def _save_experiments(self, experiments: list[Experiment]) -> None:
-        self._atomic_write(
-            self._experiments_path,
-            json.dumps([e.model_dump(mode="json") for e in experiments], indent=2, default=str),
-        )
-        self._experiments_cache = experiments
-
     def add_experiment(self, experiment: Experiment) -> None:
-        experiments = self._load_experiments()
-        experiments.append(experiment)
-        self._save_experiments(experiments)
+        self._conn.execute(
+            "INSERT INTO experiments (id, name, paper_id, data) VALUES (?, ?, ?, ?)",
+            (experiment.id, experiment.name, experiment.paper_id, _dump(experiment)),
+        )
+        self._conn.commit()
 
     def get_experiment(self, experiment_id: str) -> Experiment | None:
-        for e in self._load_experiments():
-            if e.id == experiment_id:
-                return e
-        return None
+        row = self._conn.execute(
+            "SELECT data FROM experiments WHERE id = ?", (experiment_id,)
+        ).fetchone()
+        return Experiment.model_validate(json.loads(row[0])) if row else None
 
     def get_experiment_by_name(self, name: str) -> Experiment | None:
-        for e in self._load_experiments():
-            if e.name == name:
-                return e
-        return None
+        row = self._conn.execute("SELECT data FROM experiments WHERE name = ?", (name,)).fetchone()
+        return Experiment.model_validate(json.loads(row[0])) if row else None
 
     def list_experiments(self) -> list[Experiment]:
-        return self._load_experiments()
+        rows = self._conn.execute("SELECT data FROM experiments").fetchall()
+        return [Experiment.model_validate(json.loads(r[0])) for r in rows]
 
     def remove_experiment(self, experiment_id: str) -> bool:
-        experiments = self._load_experiments()
-        filtered = [e for e in experiments if e.id != experiment_id]
-        if len(filtered) == len(experiments):
-            return False
-        self._save_experiments(filtered)
-        return True
+        cur = self._conn.execute("DELETE FROM experiments WHERE id = ?", (experiment_id,))
+        self._conn.commit()
+        return cur.rowcount > 0
 
     # ── Watches ───────────────────────────────────────────────
 
-    def _load_watches(self) -> list[ArxivWatch]:
-        if self._watches_cache is not None:
-            return self._watches_cache
-        if not self._watches_path.exists():
-            return []
-        data = json.loads(self._watches_path.read_text())
-        self._watches_cache = [ArxivWatch.model_validate(d) for d in data]
-        return self._watches_cache
-
-    def _save_watches(self, watches: list[ArxivWatch]) -> None:
-        self._atomic_write(
-            self._watches_path,
-            json.dumps([w.model_dump(mode="json") for w in watches], indent=2, default=str),
-        )
-        self._watches_cache = watches
-
     def add_watch(self, watch: ArxivWatch) -> None:
-        watches = self._load_watches()
-        watches.append(watch)
-        self._save_watches(watches)
+        self._conn.execute(
+            "INSERT INTO watches (id, query, data) VALUES (?, ?, ?)",
+            (watch.id, watch.query, _dump(watch)),
+        )
+        self._conn.commit()
 
     def list_watches(self) -> list[ArxivWatch]:
-        return self._load_watches()
+        rows = self._conn.execute("SELECT data FROM watches").fetchall()
+        return [ArxivWatch.model_validate(json.loads(r[0])) for r in rows]
 
     def update_watch(self, watch: ArxivWatch) -> None:
-        watches = self._load_watches()
-        for i, w in enumerate(watches):
-            if w.id == watch.id:
-                watches[i] = watch
-                self._save_watches(watches)
-                return
-        raise KeyError(f"Watch {watch.id} not found")
+        cur = self._conn.execute(
+            "UPDATE watches SET query=?, data=? WHERE id = ?",
+            (watch.query, _dump(watch), watch.id),
+        )
+        self._conn.commit()
+        if cur.rowcount == 0:
+            raise KeyError(f"Watch {watch.id} not found")
 
     def remove_watch(self, watch_id: str) -> bool:
-        watches = self._load_watches()
-        filtered = [w for w in watches if w.id != watch_id]
-        if len(filtered) == len(watches):
-            return False
-        self._save_watches(filtered)
-        return True
+        cur = self._conn.execute("DELETE FROM watches WHERE id = ?", (watch_id,))
+        self._conn.commit()
+        return cur.rowcount > 0
 
     # ── Research Sessions ─────────────────────────────────────
 
     def list_research_sessions(self) -> list[ResearchSession]:
-        if self._sessions_cache is not None:
-            return self._sessions_cache
-        if not self._research_path.exists():
-            return []
+        rows = self._conn.execute("SELECT data FROM research_sessions").fetchall()
         try:
-            self._sessions_cache = [
-                ResearchSession(**d) for d in json.loads(self._research_path.read_text())
-            ]
-            return self._sessions_cache
+            return [ResearchSession(**json.loads(r[0])) for r in rows]
         except Exception:
             return []
 
     def add_research_session(self, session: ResearchSession) -> None:
-        sessions = self.list_research_sessions()
-        sessions.append(session)
-        self._sessions_cache = sessions
-        self._atomic_write(
-            self._research_path,
-            json.dumps([s.model_dump(mode="json") for s in sessions], indent=2, default=str),
+        self._conn.execute(
+            "INSERT INTO research_sessions (id, topic, created_at, data) VALUES (?, ?, ?, ?)",
+            (session.id, session.topic, session.created_at.isoformat(), _dump(session)),
         )
+        self._conn.commit()
 
     def get_research_session(self, session_id: str) -> ResearchSession | None:
-        return next((s for s in self.list_research_sessions() if s.id == session_id), None)
+        row = self._conn.execute(
+            "SELECT data FROM research_sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return ResearchSession(**json.loads(row[0]))
+
+    # ── Knowledge Graph ───────────────────────────────────────
+
+    def add_edge(
+        self,
+        source_id: str,
+        target_id: str,
+        edge_type: str = "cites",
+        weight: float = 1.0,
+        metadata: dict | None = None,
+    ) -> bool:
+        """Add a directed edge between two papers. Returns True if new."""
+        try:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO paper_edges "
+                "(source_id, target_id, edge_type, weight, metadata, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    source_id,
+                    target_id,
+                    edge_type,
+                    weight,
+                    json.dumps(metadata) if metadata else None,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+            self._conn.commit()
+            return self._conn.execute("SELECT changes()").fetchone()[0] > 0
+        except sqlite3.IntegrityError:
+            return False
+
+    def get_neighbors(self, paper_id: str) -> list[dict]:
+        """Get all papers connected to a given paper (both directions)."""
+        rows = self._conn.execute(
+            "SELECT target_id AS neighbor, edge_type, weight FROM paper_edges "
+            "WHERE source_id = ? "
+            "UNION ALL "
+            "SELECT source_id AS neighbor, edge_type, weight FROM paper_edges "
+            "WHERE target_id = ?",
+            (paper_id, paper_id),
+        ).fetchall()
+        return [{"paper_id": r[0], "edge_type": r[1], "weight": r[2]} for r in rows]
+
+    def get_edges_from(self, paper_id: str) -> list[dict]:
+        """Get outgoing edges (papers this paper cites)."""
+        rows = self._conn.execute(
+            "SELECT target_id, edge_type, weight FROM paper_edges WHERE source_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [{"paper_id": r[0], "edge_type": r[1], "weight": r[2]} for r in rows]
+
+    def get_edges_to(self, paper_id: str) -> list[dict]:
+        """Get incoming edges (papers that cite this paper)."""
+        rows = self._conn.execute(
+            "SELECT source_id, edge_type, weight FROM paper_edges WHERE target_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [{"paper_id": r[0], "edge_type": r[1], "weight": r[2]} for r in rows]
+
+    def list_all_edges(self) -> list[dict]:
+        """Return all edges in the graph."""
+        rows = self._conn.execute(
+            "SELECT source_id, target_id, edge_type, weight FROM paper_edges"
+        ).fetchall()
+        return [{"source": r[0], "target": r[1], "edge_type": r[2], "weight": r[3]} for r in rows]
+
+    def get_clusters(self) -> list[list[str]]:
+        """Find connected components in the paper graph via BFS."""
+        edges = self.list_all_edges()
+        adj: dict[str, set[str]] = {}
+        for e in edges:
+            adj.setdefault(e["source"], set()).add(e["target"])
+            adj.setdefault(e["target"], set()).add(e["source"])
+        visited: set[str] = set()
+        clusters: list[list[str]] = []
+        for node in adj:
+            if node in visited:
+                continue
+            cluster: list[str] = []
+            queue = [node]
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                visited.add(current)
+                cluster.append(current)
+                queue.extend(adj.get(current, set()) - visited)
+            if cluster:
+                clusters.append(sorted(cluster))
+        return sorted(clusters, key=len, reverse=True)
+
+    def edge_count(self) -> int:
+        row = self._conn.execute("SELECT COUNT(*) FROM paper_edges").fetchone()
+        return row[0] if row else 0
 
     # ── Summaries ─────────────────────────────────────────────
 
     def save_summary(self, paper: Paper) -> Path:
-        """Write paper.summary to ~/.openseed/summaries/{arxiv_id|id}.md; skip if unchanged."""
+        """Write paper.summary to ~/.openseed/summaries/{arxiv_id|id}.md."""
         summaries_dir = self._dir.parent / "summaries"
         summaries_dir.mkdir(parents=True, exist_ok=True)
         slug = (paper.arxiv_id or paper.id).replace("/", "_")
@@ -247,7 +430,7 @@ class PaperLibrary:
         return path
 
     def save_synthesis(self, paper_ids: list[str], content: str) -> Path:
-        """Write synthesis markdown to summaries/synthesis_{ids}.md; skip if unchanged."""
+        """Write synthesis markdown."""
         summaries_dir = self._dir.parent / "summaries"
         summaries_dir.mkdir(parents=True, exist_ok=True)
         slug = "_".join(sorted(paper_ids)[:4])
@@ -259,7 +442,7 @@ class PaperLibrary:
         return path
 
     def save_report(self, session_id: str, topic: str, content: str) -> Path:
-        """Write research report to summaries/report_{slug}_{session_id}.md."""
+        """Write research report."""
         summaries_dir = self._dir.parent / "summaries"
         summaries_dir.mkdir(parents=True, exist_ok=True)
         slug = topic.lower().replace(" ", "_")[:40]
@@ -269,15 +452,3 @@ class PaperLibrary:
             return path
         path.write_text(new_content, encoding="utf-8")
         return path
-
-    # ── Helpers ───────────────────────────────────────────────
-
-    @staticmethod
-    def _atomic_write(path: Path, content: str) -> None:
-        tmp = tempfile.NamedTemporaryFile(mode="w", dir=path.parent, suffix=".tmp", delete=False)
-        try:
-            tmp.write(content)
-            tmp.flush()
-            Path(tmp.name).replace(path)
-        finally:
-            tmp.close()

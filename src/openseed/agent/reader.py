@@ -10,7 +10,6 @@ import re
 from collections.abc import Callable
 from datetime import date
 
-import httpx
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 from claude_agent_sdk.types import AssistantMessage, ToolUseBlock
 
@@ -112,34 +111,9 @@ _ARXIV_ID_RE = re.compile(r"^\d{4}\.\d{4,5}$")
 
 def _fetch_citations(arxiv_ids: list[str]) -> dict[str, int]:
     """Fetch real citation counts from Semantic Scholar batch API."""
-    if not arxiv_ids:
-        return {}
-    try:
-        timeout = httpx.Timeout(10.0, connect=5.0)
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.post(
-                "https://api.semanticscholar.org/graph/v1/paper/batch",
-                json={"ids": [f"ArXiv:{aid}" for aid in arxiv_ids]},
-                params={"fields": "citationCount"},
-            )
-            if resp.status_code == 429:
-                _log.warning("Semantic Scholar rate-limited; using estimated citations")
-                return {}
-            if resp.status_code != 200:
-                _log.warning(
-                    "Semantic Scholar returned %d; using estimated citations", resp.status_code
-                )
-                return {}
-            return {
-                aid: (item.get("citationCount") or 0)
-                for aid, item in zip(arxiv_ids, resp.json())
-                if item is not None
-            }
-    except httpx.TimeoutException:
-        _log.warning("Semantic Scholar timed out; using estimated citations")
-    except Exception as exc:
-        _log.warning("Semantic Scholar error: %s", exc)
-    return {}
+    from openseed.services.scholar import fetch_citation_counts
+
+    return fetch_citation_counts(arxiv_ids)
 
 
 def _parse_ranked_lines(raw: str) -> list[dict]:
@@ -278,6 +252,23 @@ def extract_paper_visuals(text: str, model: str) -> dict:
         return json.loads(raw)
     except Exception:
         return {}
+
+
+def extract_references(text: str, model: str) -> list[str]:
+    """Extract ArXiv IDs of papers referenced in the given text via AI."""
+    system = (
+        "You are a citation extraction expert. From the paper text below, identify all "
+        "referenced papers that have ArXiv IDs. Return ONLY a comma-separated list of "
+        "ArXiv IDs (format: YYMM.NNNNN). If no ArXiv IDs found, return 'NONE'."
+    )
+    raw = _ask(model, system, f"Extract ArXiv references from:\n\n{text[:8000]}")
+    if "NONE" in raw.upper() or not raw.strip():
+        return []
+    ids = []
+    for part in re.findall(r"\d{4}\.\d{4,5}", raw):
+        if part not in ids:
+            ids.append(part)
+    return ids
 
 
 class PaperReader:

@@ -462,3 +462,47 @@ def watch_run(ctx: click.Context) -> None:
         return
     for w in watches:
         _run_watch(lib, w)
+
+
+@paper.command("graph")
+@click.argument("paper_id")
+@click.pass_context
+def graph(ctx: click.Context, paper_id: str) -> None:
+    """Show papers connected to a given paper in the knowledge graph."""
+    lib = get_library(ctx)
+    p = require_paper(lib, paper_id)
+    neighbors = lib.get_neighbors(paper_id)
+    if not neighbors:
+        console.print(f"[dim]No connections found for '{p.title}'.[/dim]")
+        return
+    table = Table(title=f"Connections: {p.title[:50]}", show_lines=True)
+    table.add_column("Paper", style="bold", max_width=40)
+    table.add_column("ArXiv ID", style="cyan", width=14)
+    table.add_column("Relation", width=12)
+    for n in neighbors:
+        linked = lib.get_paper(n["paper_id"])
+        title = linked.title[:38] if linked else n["paper_id"]
+        arxiv = linked.arxiv_id or "" if linked else ""
+        table.add_row(title, arxiv, n["edge_type"])
+    console.print(table)
+
+
+@paper.command("cluster")
+@click.pass_context
+def cluster(ctx: click.Context) -> None:
+    """Show paper clusters from the knowledge graph."""
+    lib = get_library(ctx)
+    clusters = lib.get_clusters()
+    if not clusters:
+        console.print("[dim]No connections in the knowledge graph yet.[/dim]")
+        console.print("[dim]Summarize papers to build connections.[/dim]")
+        return
+    for i, group in enumerate(clusters, 1):
+        names = []
+        for pid in group:
+            p = lib.get_paper(pid)
+            names.append(p.title[:50] if p else pid)
+        panel_content = "\n".join(f"  • {name}" for name in names)
+        console.print(
+            Panel(panel_content, title=f"Cluster {i} ({len(group)} papers)", border_style="cyan")
+        )

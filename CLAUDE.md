@@ -51,9 +51,11 @@ OpenSeed is an AI-powered research workflow CLI. It manages a local paper librar
 |---|---|
 | `cli/` | Click groups: `paper`, `experiment`, `agent` |
 | `models/` | Pydantic models: Paper, Author, Tag, Experiment, ExperimentRun |
-| `storage/library.py` | JSON-backed CRUD for papers + experiments |
+| `storage/library.py` | SQLite-backed CRUD for papers + experiments + knowledge graph |
 | `services/arxiv.py` | ArXiv metadata fetch + search (sync + async) |
 | `services/pdf.py` | PDF text extraction via PyMuPDF |
+| `services/scholar.py` | Semantic Scholar API client (citations, references, recommendations) |
+| `storage/migrate.py` | JSON → SQLite auto-migration |
 | `agent/reader.py` | PaperReader — structured summarize/analyze via Claude |
 | `agent/assistant.py` | ResearchAssistant — freeform ask/review via Claude |
 | `auth.py` | `make_anthropic_client()`, `has_anthropic_auth()`, `run_claude_setup_token()` |
