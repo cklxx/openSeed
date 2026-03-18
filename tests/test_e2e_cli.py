@@ -1,6 +1,8 @@
-"""End-to-end CLI tests: real ArXiv data, isolated filesystem. Run with: pytest -m integration"""
+"""End-to-end CLI tests: isolated filesystem, ArXiv fetch mocked."""
 
 from __future__ import annotations
+
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -8,10 +10,15 @@ from click.testing import CliRunner
 from openseed.cli.main import cli
 from openseed.storage.library import PaperLibrary
 
-pytestmark = pytest.mark.integration
-
 _URL = "https://arxiv.org/abs/1706.03762"
 _ID = "1706.03762"
+
+
+@pytest.fixture(autouse=True)
+def mock_fetch(sample_paper):
+    target = "openseed.cli.paper.fetch_paper_metadata"
+    with patch(target, new_callable=AsyncMock, return_value=sample_paper):
+        yield
 
 
 @pytest.fixture
@@ -191,3 +198,29 @@ def test_research_list_empty(runner, env):
     r = _invoke(runner, ["research", "list"], env)
     assert r.exit_code == 0
     assert "No research sessions" in r.output
+
+
+# ── Edge cases ────────────────────────────────────────────────────────────────
+
+
+def test_init(runner, env):
+    r = _invoke(runner, ["init"], env)
+    assert r.exit_code == 0
+    assert "initialized" in r.output.lower()
+
+
+def test_paper_list_empty(runner, env):
+    r = _invoke(runner, ["paper", "list"], env)
+    assert r.exit_code == 0
+    assert "No papers found" in r.output
+
+
+def test_paper_show_not_found(runner, env):
+    r = _invoke(runner, ["paper", "show", "nonexistent"], env)
+    assert r.exit_code != 0
+
+
+def test_experiment_list_empty(runner, env):
+    r = _invoke(runner, ["experiment", "list"], env)
+    assert r.exit_code == 0
+    assert "No experiments found" in r.output

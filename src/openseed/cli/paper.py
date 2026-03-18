@@ -35,6 +35,7 @@ from openseed.services.arxiv import (
     search_papers,
 )
 from openseed.services.pdf import extract_text
+from openseed.storage.library import PaperLibrary
 
 console = Console()
 
@@ -72,7 +73,9 @@ def _score_bar(score: float, max_score: float, width: int = 10) -> str:
     return f"[yellow]{score:5.1f}[/yellow]"
 
 
-def _build_search_table(results: list[dict], since: int | None, lib=None) -> Table:
+def _build_search_table(
+    results: list[dict], since: int | None, lib: PaperLibrary | None = None
+) -> Table:
     title = "Search results" + (f" (since {since})" if since else "")
     max_score = max((r.get("score", 0) for r in results), default=1) or 1
     table = Table(title=title, show_lines=True)

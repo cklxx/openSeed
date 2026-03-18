@@ -1,8 +1,8 @@
-"""E2E agent command tests: real CLI + real ArXiv metadata, mocked Claude _ask."""
+"""E2E agent command tests: isolated CLI, ArXiv fetch + Claude _ask mocked."""
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -11,14 +11,23 @@ from openseed.cli.main import cli
 from openseed.models.paper import Paper
 from openseed.storage.library import PaperLibrary
 
-pytestmark = pytest.mark.integration
-
 _URL = "https://arxiv.org/abs/1706.03762"
 _SUMMARY = "## Key Contributions\n- Transformer\n\n**Relevance Score:** 9/10"
 _TAGS = "transformers, attention, nlp, deep-learning, neural-networks"
 _REVIEW = "## Review\nHighly influential. Self-attention is a key innovation."
 _SYNTHESIS = "## Shared Themes\n- Attention\n\n## Synthesis\nBoth influential."
 _VISUALS = '{"pipeline": ["Encode", "Attend", "Decode"], "metrics": []}'
+
+
+@pytest.fixture(autouse=True)
+def mock_fetch(sample_paper):
+    paper_target = "openseed.cli.paper.fetch_paper_metadata"
+    agent_target = "openseed.cli.agent.fetch_paper_metadata"
+    with (
+        patch(paper_target, new_callable=AsyncMock, return_value=sample_paper),
+        patch(agent_target, new_callable=AsyncMock, return_value=sample_paper),
+    ):
+        yield
 
 
 @pytest.fixture
@@ -44,7 +53,7 @@ def _invoke(runner, args, env, **kw):
 
 
 def _add_real_paper(runner, env):
-    """Fetches real metadata from ArXiv, no Claude calls."""
+    """Add a paper via CLI (ArXiv fetch mocked via autouse fixture)."""
     return _invoke(runner, ["paper", "add", _URL], env)
 
 

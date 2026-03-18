@@ -46,8 +46,7 @@ def _build_metrics_table(metrics: list[dict]) -> Table:
 
 def library_status_for_arxiv(lib: PaperLibrary, arxiv_id: str) -> str:
     """Return a Rich-formatted status badge if the paper is in the local library."""
-    lib._load_papers()
-    paper = (lib._papers_by_arxiv or {}).get(arxiv_id)
+    paper = lib.get_paper_by_arxiv(arxiv_id)
     if not paper:
         return ""
     if paper.summary:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openseed"
-version = "0.5.0"
+version = "0.5.1"
 description = "AI-powered Research Workflow Management CLI"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -46,6 +46,7 @@ select = ["E", "F", "I", "N", "W", "UP"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+addopts = "-m 'not integration and not slow'"
 markers = [
     "integration: tests requiring real network access (ArXiv, Semantic Scholar)",
     "slow: tests calling Claude API (expensive, requires ANTHROPIC_API_KEY)",
