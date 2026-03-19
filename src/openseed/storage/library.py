@@ -411,6 +411,17 @@ class PaperLibrary:
                 clusters.append(sorted(cluster))
         return sorted(clusters, key=len, reverse=True)
 
+    def get_neighbor_counts(self) -> dict[str, int]:
+        """Return {paper_id: neighbor_count} for all papers with at least one edge."""
+        rows = self._conn.execute(
+            "SELECT paper_id, COUNT(*) FROM ("
+            "  SELECT source_id AS paper_id FROM paper_edges"
+            "  UNION ALL"
+            "  SELECT target_id AS paper_id FROM paper_edges"
+            ") GROUP BY paper_id"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     def edge_count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM paper_edges").fetchone()
         return row[0] if row else 0

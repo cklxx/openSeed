@@ -75,11 +75,12 @@ async def graph_view(request: Request):
     edges = lib.list_all_edges()
     clusters = lib.get_clusters()
     paper_map = {p.id: p for p in papers}
-    nodes = []
-    for p in papers:
-        neighbor_count = len(lib.get_neighbors(p.id))
-        if neighbor_count > 0:
-            nodes.append({"id": p.id, "title": p.title[:40], "connections": neighbor_count})
+    neighbor_counts = lib.get_neighbor_counts()
+    nodes = [
+        {"id": p.id, "title": p.title[:40], "connections": neighbor_counts[p.id]}
+        for p in papers
+        if p.id in neighbor_counts
+    ]
     return templates.TemplateResponse(
         request,
         "graph.html",

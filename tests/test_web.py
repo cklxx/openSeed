@@ -100,6 +100,29 @@ class TestWebDashboard:
         assert "Knowledge Graph" in resp.text
         assert "Cluster 1" in resp.text
 
+    def test_graph_empty_library(self, tmp_path: Path) -> None:
+        empty_lib = PaperLibrary(tmp_path / "empty")
+
+        with patch("openseed.web.app._lib", return_value=empty_lib):
+            from openseed.web.app import app
+
+            c = TestClient(app)
+            resp = c.get("/graph")
+        assert resp.status_code == 200
+
+    def test_graph_isolated_nodes_excluded(self, tmp_path: Path) -> None:
+        """Papers with no edges should not appear as graph nodes."""
+        lib = PaperLibrary(tmp_path / "iso")
+        lib.add_paper(
+            Paper(id="x1", title="Isolated Paper", authors=[], abstract="No edges here.")
+        )
+        with patch("openseed.web.app._lib", return_value=lib):
+            from openseed.web.app import app
+
+            c = TestClient(app)
+            resp = c.get("/graph")
+        assert resp.status_code == 200
+
     def test_digests_empty(self, client: TestClient) -> None:
         resp = client.get("/digests")
         assert resp.status_code == 200

@@ -105,6 +105,30 @@ class TestResearchSessionLibrary:
         assert len(tmp_library.list_research_sessions()) == 2
 
 
+class TestKnowledgeGraph:
+    def test_get_neighbor_counts_empty(self, tmp_library: PaperLibrary) -> None:
+        assert tmp_library.get_neighbor_counts() == {}
+
+    def test_get_neighbor_counts_with_edges(self, tmp_library: PaperLibrary) -> None:
+        p1 = Paper(id="a", title="A", abstract="")
+        p2 = Paper(id="b", title="B", abstract="")
+        p3 = Paper(id="c", title="C", abstract="")
+        tmp_library.add_paper(p1)
+        tmp_library.add_paper(p2)
+        tmp_library.add_paper(p3)
+        tmp_library.add_edge("a", "b", "cites")
+        tmp_library.add_edge("a", "c", "cites")
+        counts = tmp_library.get_neighbor_counts()
+        assert counts["a"] == 2
+        assert counts["b"] == 1
+        assert counts["c"] == 1
+
+    def test_isolated_paper_not_in_neighbor_counts(self, tmp_library: PaperLibrary) -> None:
+        p = Paper(id="iso", title="Isolated", abstract="")
+        tmp_library.add_paper(p)
+        assert "iso" not in tmp_library.get_neighbor_counts()
+
+
 class TestSearchPapers:
     def test_multi_token(self, tmp_library: PaperLibrary, sample_paper: Paper) -> None:
         tmp_library.add_paper(sample_paper)
