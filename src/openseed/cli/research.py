@@ -6,6 +6,7 @@ import click
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from openseed.agent.autoresearch import AutoResearcher
@@ -47,10 +48,17 @@ def run_research(
     config = get_config(ctx)
     researcher = AutoResearcher(model=config.default_model, lib=lib)
 
-    with console.status(f"[cyan]Researching '{topic}'…[/cyan]") as status:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        task = progress.add_task(f"[bold]Researching '{topic}'…[/bold]", total=None)
 
         def _on_step(msg: str) -> None:
-            status.update(f"[cyan]{msg}[/cyan]")
+            progress.update(task, description=f"[cyan]{msg}[/cyan]")
 
         session = researcher.run(
             topic, count=count, depth=depth, since_year=since_year, on_step=_on_step

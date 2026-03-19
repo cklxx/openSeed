@@ -10,6 +10,14 @@ import click
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 
 from openseed.agent.discovery import discover_papers, enrich_citations
@@ -311,9 +319,21 @@ def search(
         return
     console.print(_build_search_table(results, since, lib=lib))
     if download:
-        console.print(f"\n[bold]Downloading top {min(10, len(results))} papers…[/bold]\n")
-        for r in results[:10]:
-            _fetch_and_add(ctx, r, lib, config, cn)
+        top = results[:10]
+        console.print()
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task(f"[bold]Fetching {len(top)} papers…[/bold]", total=len(top))
+            for r in top:
+                progress.update(task, description=f"[cyan]Fetching {r['arxiv_id']}…[/cyan]")
+                _fetch_and_add(ctx, r, lib, config, cn)
+                progress.advance(task)
         return
     if add:
         top = results[0]
@@ -486,8 +506,22 @@ def watch_run(ctx: click.Context, digest: bool) -> None:
     if not watches:
         console.print("[dim]No watches configured.[/dim]")
         return
-    results = run_all_watches(lib)
     watch_names = {w.id: w.query for w in watches}
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("[bold]Running watches…[/bold]", total=len(watches))
+
+        def _on_progress(query: str) -> None:
+            progress.update(task, description=f"[dim]✓ {query[:45]}[/dim]")
+            progress.advance(task)
+
+        results = run_all_watches(lib, progress_callback=_on_progress)
     for wid, papers in results.items():
         query = watch_names.get(wid, wid)
         console.print(f"\n[bold cyan]Watch:[/bold cyan] '{query}'")

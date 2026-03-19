@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from openseed.models.paper import Paper
@@ -46,10 +47,15 @@ def run_single_watch(lib: PaperLibrary, watch: ArxivWatch) -> list[Paper]:
     return results
 
 
-def run_all_watches(lib: PaperLibrary) -> dict[str, list[Paper]]:
+def run_all_watches(
+    lib: PaperLibrary,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, list[Paper]]:
     """Run all saved watches and return {watch_id: [papers]} mapping."""
     watches = lib.list_watches()
     results: dict[str, list[Paper]] = {}
     for w in watches:
         results[w.id] = run_single_watch(lib, w)
+        if progress_callback:
+            progress_callback(w.query)
     return results
