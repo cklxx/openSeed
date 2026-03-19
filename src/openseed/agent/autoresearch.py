@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +21,8 @@ from openseed.models.paper import Paper, Tag
 from openseed.models.research import ResearchSession
 from openseed.services.arxiv import fetch_paper_metadata, search_papers
 from openseed.storage.library import PaperLibrary
+
+logger = logging.getLogger(__name__)
 
 _VARIANT_SYSTEM = (
     "You are a research search strategist. Generate exactly {n} queries for a topic, "
@@ -82,7 +85,11 @@ class AutoResearcher:
         """Direct ArXiv API search as fallback when Claude returns too few results."""
         try:
             papers = search_papers(query, max_results=count)
+        except httpx.HTTPError as exc:
+            logger.warning("ArXiv search failed for %r: %s", query, exc)
+            return []
         except Exception:
+            logger.exception("Unexpected error in ArXiv fallback for %r", query)
             return []
         return [
             {
@@ -145,7 +152,8 @@ class AutoResearcher:
     def _fetch_once(self, arxiv_id: str) -> Paper | None:
         """Single fetch attempt; returns None on transient error, raises on permanent."""
         try:
-            return asyncio.run(fetch_paper_metadata(arxiv_id))
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                return ex.submit(asyncio.run, fetch_paper_metadata(arxiv_id)).result()
         except (httpx.TimeoutException, httpx.HTTPStatusError):
             return None
 
@@ -157,7 +165,13 @@ class AutoResearcher:
                 time.sleep(delay)
             try:
                 paper = self._fetch_once(arxiv_id)
+            except httpx.HTTPError as exc:
+                logger.warning("Network error fetching %s: %s", arxiv_id, exc)
+                if on_step:
+                    on_step(f"Skipping {arxiv_id}: {exc}")
+                return None
             except Exception as exc:
+                logger.exception("Unexpected error fetching %s", arxiv_id)
                 if on_step:
                     on_step(f"Skipping {arxiv_id}: {exc}")
                 return None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import re
 from collections.abc import Callable
@@ -60,20 +61,24 @@ def _ask(
     on_step: Callable[[str], None] | None = None,
     on_result: Callable[[object], None] | None = None,
 ) -> str:
-    # Suppress the noisy anyio cancel-scope cleanup RuntimeError emitted by
-    # claude-agent-sdk when the async generator exits early (cosmetic only).
+    # Run in a dedicated thread so this always gets a fresh event loop,
+    # safe to call from both sync and async contexts (no nested-loop error).
     def _silence_cancel_scope(loop: asyncio.AbstractEventLoop, ctx: dict) -> None:
         exc = ctx.get("exception")
         if isinstance(exc, RuntimeError) and "cancel scope" in str(exc):
             return
         loop.default_exception_handler(ctx)
 
-    loop = asyncio.new_event_loop()
-    loop.set_exception_handler(_silence_cancel_scope)
-    try:
-        return loop.run_until_complete(_ask_async(model, system, prompt, on_step, on_result))
-    finally:
-        loop.close()
+    def _run() -> str:
+        loop = asyncio.new_event_loop()
+        loop.set_exception_handler(_silence_cancel_scope)
+        try:
+            return loop.run_until_complete(_ask_async(model, system, prompt, on_step, on_result))
+        finally:
+            loop.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(_run).result()
 
 
 def auto_tag_paper(
