@@ -11,6 +11,9 @@ Schema (hybrid: indexed columns + JSON blob):
 │              weight, metadata, created_at                    │
 │ papers_fts: FTS5 virtual table (title, abstract, summary,   │
 │             authors, tags) — synced via triggers             │
+│ research_memory: id, session_id, role, content, topics,      │
+│                  created_at — conversation memory             │
+│ research_memory_fts: FTS5 on content+topics                  │
 │ schema_version: version INTEGER                              │
 └─────────────────────────────────────────────────────────────┘
 """
@@ -77,6 +80,32 @@ CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts USING fts5(
     title, abstract, summary, authors, tags
 );
+
+CREATE TABLE IF NOT EXISTS research_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    topics TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS research_memory_fts USING fts5(
+    content,
+    topics,
+    content='research_memory',
+    content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS research_memory_ai AFTER INSERT ON research_memory BEGIN
+    INSERT INTO research_memory_fts(rowid, content, topics)
+    VALUES (new.id, new.content, new.topics);
+END;
+
+CREATE TRIGGER IF NOT EXISTS research_memory_ad AFTER DELETE ON research_memory BEGIN
+    INSERT INTO research_memory_fts(research_memory_fts, rowid, content, topics)
+    VALUES('delete', old.id, old.content, old.topics);
+END;
 """
 
 
