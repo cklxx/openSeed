@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from openseed.models.paper import Author, Paper
+from openseed.models.paper import Author, Paper, Tag
 from openseed.storage.library import PaperLibrary
 
 
@@ -17,8 +17,10 @@ def lib(tmp_path):
     p = Paper(
         title="Attention Is All You Need",
         authors=[Author(name="Vaswani")],
-        abstract="Transformer architecture. " * 50,  # long enough to trigger truncation
+        abstract="Transformer architecture. " * 50,
+        summary="A detailed summary. " * 100,
         arxiv_id="1706.03762",
+        tags=[Tag(name="transformers"), Tag(name="nlp")],
     )
     library.add_paper(p)
     return library
@@ -28,6 +30,21 @@ def lib(tmp_path):
 def patch_lib(lib):
     with patch("openseed.mcp.server._get_library", return_value=lib):
         yield
+
+
+# ── library_stats ─────────────────────────────────────────────────────────────
+
+
+def test_library_stats():
+    from openseed.mcp.server import library_stats
+
+    result = json.loads(library_stats())
+    assert result["total_papers"] == 1
+    assert "unread" in result["by_status"]
+    assert "transformers" in result["top_tags"]
+
+
+# ── search_papers ─────────────────────────────────────────────────────────────
 
 
 def test_search_papers_returns_paginated():
@@ -48,25 +65,35 @@ def test_search_papers_empty():
     assert result["total"] == 0
 
 
-def test_get_paper_found(lib):
+# ── get_paper ─────────────────────────────────────────────────────────────────
+
+
+def test_get_paper_preview_truncates(lib):
     from openseed.mcp.server import get_paper
 
-    paper_id = lib.list_papers()[0].id
-    result = json.loads(get_paper(paper_id))
+    pid = lib.list_papers()[0].id
+    result = json.loads(get_paper(pid))
     assert result["title"] == "Attention Is All You Need"
-    assert "abstract" in result
-    assert "summary" in result
+    assert result.get("abstract_truncated") is True
+    assert result.get("summary_truncated") is True
 
 
-def test_get_paper_truncation(lib):
+def test_get_paper_section_abstract(lib):
     from openseed.mcp.server import get_paper
 
-    paper_id = lib.list_papers()[0].id
-    result = json.loads(get_paper(paper_id))
-    assert result.get("abstract_truncated") is True
-    full = json.loads(get_paper(paper_id, section="abstract"))
-    assert "abstract_truncated" not in full
-    assert len(full["abstract"]) > len(result["abstract"])
+    pid = lib.list_papers()[0].id
+    result = json.loads(get_paper(pid, section="abstract"))
+    assert "abstract_truncated" not in result
+    assert "summary_truncated" in result  # summary still truncated
+
+
+def test_get_paper_section_full(lib):
+    from openseed.mcp.server import get_paper
+
+    pid = lib.list_papers()[0].id
+    result = json.loads(get_paper(pid, section="full"))
+    assert "abstract_truncated" not in result
+    assert "summary_truncated" not in result
 
 
 def test_get_paper_not_found():
@@ -74,6 +101,9 @@ def test_get_paper_not_found():
 
     result = json.loads(get_paper("nonexistent"))
     assert "error" in result
+
+
+# ── list_papers ───────────────────────────────────────────────────────────────
 
 
 def test_list_papers_paginated():
@@ -94,11 +124,17 @@ def test_list_papers_filter_status():
     assert result["total"] == 0
 
 
+# ── get_graph ─────────────────────────────────────────────────────────────────
+
+
 def test_get_graph():
     from openseed.mcp.server import get_graph
 
     result = json.loads(get_graph("nonexistent"))
     assert isinstance(result, list)
+
+
+# ── search_memories ───────────────────────────────────────────────────────────
 
 
 def test_search_memories_paginated():
@@ -107,6 +143,9 @@ def test_search_memories_paginated():
     result = json.loads(search_memories("attention"))
     assert "items" in result
     assert "total" in result
+
+
+# ── ask_research ──────────────────────────────────────────────────────────────
 
 
 @patch("openseed.agent.assistant._ask")
