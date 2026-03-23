@@ -57,10 +57,12 @@ class TestGroupByTags:
 
 class TestClusterSummaries:
     def test_returns_titles_per_tag(self):
-        groups = _group_by_tags([
-            _make_paper("Attention", ["transformers"]),
-            _make_paper("BERT", ["transformers"]),
-        ])
+        groups = _group_by_tags(
+            [
+                _make_paper("Attention", ["transformers"]),
+                _make_paper("BERT", ["transformers"]),
+            ]
+        )
         summaries = _build_cluster_summaries(groups)
         assert summaries == {"transformers": ["Attention", "BERT"]}
 
@@ -104,20 +106,22 @@ class TestAnalyzeGapsWithAI:
     def test_returns_ai_gaps(self, mock_ask, library):
         for i, tag in enumerate(["ml", "ml", "nlp"]):
             library.add_paper(_make_paper(f"Paper {i}", [tag]))
-        ai_response = json.dumps([
-            {
-                "cluster_name": "ml",
-                "gap_description": "No papers on reinforcement learning",
-                "suggested_queries": ["reinforcement learning survey"],
-                "confidence": 0.9,
-            },
-            {
-                "cluster_name": "nlp",
-                "gap_description": "Missing multilingual models",
-                "suggested_queries": ["multilingual NLP"],
-                "confidence": 0.7,
-            },
-        ])
+        ai_response = json.dumps(
+            [
+                {
+                    "cluster_name": "ml",
+                    "gap_description": "No papers on reinforcement learning",
+                    "suggested_queries": ["reinforcement learning survey"],
+                    "confidence": 0.9,
+                },
+                {
+                    "cluster_name": "nlp",
+                    "gap_description": "Missing multilingual models",
+                    "suggested_queries": ["multilingual NLP"],
+                    "confidence": 0.7,
+                },
+            ]
+        )
         mock_ask.return_value = ai_response
         strategy = ResearchStrategy(library)
         gaps = strategy.analyze_gaps()
@@ -175,11 +179,13 @@ class TestSuggestReadingOrder:
             p = _make_paper(f"Attention Paper {i}", ["attention"], pid=f"att{i}")
             library.add_paper(p)
             papers.append(p)
-        ai_response = json.dumps([
-            {"id": "att2", "reason": "Most recent advances"},
-            {"id": "att0", "reason": "Foundational concepts"},
-            {"id": "att1", "reason": "Builds on att0"},
-        ])
+        ai_response = json.dumps(
+            [
+                {"id": "att2", "reason": "Most recent advances"},
+                {"id": "att0", "reason": "Foundational concepts"},
+                {"id": "att1", "reason": "Builds on att0"},
+            ]
+        )
         mock_ask.return_value = ai_response
         strategy = ResearchStrategy(library)
         recs = strategy.suggest_reading_order("Attention")

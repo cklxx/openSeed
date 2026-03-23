@@ -167,9 +167,7 @@ class ResearchStrategy:
     ) -> list[ReadingRecommendation]:
         basis = "citation count" if has_edges else "date added"
         return [
-            ReadingRecommendation(
-                paper=p, reason=f"Ordered by {basis}", priority=i + 1
-            )
+            ReadingRecommendation(paper=p, reason=f"Ordered by {basis}", priority=i + 1)
             for i, p in enumerate(papers)
         ]
 
