@@ -124,8 +124,58 @@ def _row_to_paper(data_json: str) -> Paper:
     return Paper.model_validate(json.loads(data_json))
 
 
+def _row_to_experiment(data_json: str) -> Experiment:
+    return Experiment.model_validate(json.loads(data_json))
+
+
+def _row_to_session(data_json: str) -> ResearchSession:
+    return ResearchSession(**json.loads(data_json))
+
+
 def _dump(model) -> str:
     return json.dumps(model.model_dump(mode="json"), default=str)
+
+
+def _searchable_text(p: Paper) -> str:
+    """All searchable text from a paper, lowercased."""
+    return " ".join([*_fts_text(p), p.note]).lower()
+
+
+def _title_score(p: Paper, tokens: list[str]) -> int:
+    """Score: 2 points per token in title, 1 otherwise."""
+    title_l = p.title.lower()
+    return sum(2 if t in title_l else 1 for t in tokens)
+
+
+def _save_markdown(base_dir: Path, filename: str, content: str) -> Path:
+    """Write markdown file, skipping if unchanged."""
+    base_dir.mkdir(parents=True, exist_ok=True)
+    path = base_dir / filename
+    if path.exists() and path.read_text(encoding="utf-8") == content:
+        return path
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _bfs_components(adj: dict[str, set[str]]) -> list[list[str]]:
+    """Find connected components via BFS."""
+    visited: set[str] = set()
+    clusters: list[list[str]] = []
+    for node in adj:
+        if node in visited:
+            continue
+        cluster: list[str] = []
+        queue = [node]
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            cluster.append(current)
+            queue.extend(adj.get(current, set()) - visited)
+        if cluster:
+            clusters.append(sorted(cluster))
+    return sorted(clusters, key=len, reverse=True)
 
 
 class PaperLibrary:
@@ -164,34 +214,38 @@ class PaperLibrary:
 
     # ── Papers ────────────────────────────────────────────────
 
-    def add_paper(self, paper: Paper) -> bool:
-        """Add paper; skip if same arxiv_id or url already exists."""
-        if paper.arxiv_id:
-            existing = self._conn.execute(
-                "SELECT 1 FROM papers WHERE arxiv_id = ?", (paper.arxiv_id,)
-            ).fetchone()
-            if existing:
-                return False
-        if paper.url:
-            row = self._conn.execute(
-                "SELECT 1 FROM papers WHERE json_extract(data, '$.url') = ?",
-                (paper.url,),
-            ).fetchone()
-            if row:
-                return False
-        self._conn.execute(
-            "INSERT INTO papers (id, arxiv_id, title, status, added_at, data) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            _paper_to_row(paper),
-        )
-        rowid = self._conn.execute("SELECT rowid FROM papers WHERE id = ?", (paper.id,)).fetchone()[
-            0
-        ]
+    def _index_fts(self, rowid: int, paper: Paper) -> None:
+        """Insert a paper's text fields into the FTS index."""
         self._conn.execute(
             "INSERT INTO papers_fts(rowid, title, abstract, summary, authors, tags) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (rowid, *_fts_text(paper)),
         )
+
+    def _paper_exists(self, paper: Paper) -> bool:
+        """Check if paper already exists by arxiv_id or url."""
+        if paper.arxiv_id:
+            if self._conn.execute(
+                "SELECT 1 FROM papers WHERE arxiv_id = ?", (paper.arxiv_id,)
+            ).fetchone():
+                return True
+        if paper.url:
+            if self._conn.execute(
+                "SELECT 1 FROM papers WHERE json_extract(data, '$.url') = ?", (paper.url,)
+            ).fetchone():
+                return True
+        return False
+
+    def add_paper(self, paper: Paper) -> bool:
+        """Add paper; skip if same arxiv_id or url already exists."""
+        if self._paper_exists(paper):
+            return False
+        cur = self._conn.execute(
+            "INSERT INTO papers (id, arxiv_id, title, status, added_at, data) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            _paper_to_row(paper),
+        )
+        self._index_fts(cur.lastrowid, paper)
         self._conn.commit()
         return True
 
@@ -213,17 +267,20 @@ class PaperLibrary:
         row = self._conn.execute("SELECT rowid FROM papers WHERE id = ?", (paper_id,)).fetchone()
         if row is None:
             return False
-        rowid = row[0]
         self._conn.execute("DELETE FROM papers WHERE id = ?", (paper_id,))
-        self._conn.execute("DELETE FROM papers_fts WHERE rowid = ?", (rowid,))
+        self._conn.execute("DELETE FROM papers_fts WHERE rowid = ?", (row[0],))
         self._conn.commit()
         return True
 
-    def update_paper(self, paper: Paper) -> None:
-        row = self._conn.execute("SELECT rowid FROM papers WHERE id = ?", (paper.id,)).fetchone()
+    def _get_rowid(self, paper_id: str) -> int:
+        """Get the rowid for a paper, raising KeyError if not found."""
+        row = self._conn.execute("SELECT rowid FROM papers WHERE id = ?", (paper_id,)).fetchone()
         if row is None:
-            raise KeyError(f"Paper {paper.id} not found")
-        rowid = row[0]
+            raise KeyError(f"Paper {paper_id} not found")
+        return row[0]
+
+    def update_paper(self, paper: Paper) -> None:
+        rowid = self._get_rowid(paper.id)
         self._conn.execute(
             "UPDATE papers SET arxiv_id=?, title=?, status=?, added_at=?, data=? WHERE id = ?",
             (
@@ -236,11 +293,7 @@ class PaperLibrary:
             ),
         )
         self._conn.execute("DELETE FROM papers_fts WHERE rowid = ?", (rowid,))
-        self._conn.execute(
-            "INSERT INTO papers_fts(rowid, title, abstract, summary, authors, tags) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (rowid, *_fts_text(paper)),
-        )
+        self._index_fts(rowid, paper)
         self._conn.commit()
 
     def search_papers(self, query: str) -> list[Paper]:
@@ -263,31 +316,17 @@ class PaperLibrary:
 
     def _fallback_search(self, tokens: list[str]) -> list[Paper]:
         """Token-based search when FTS fails (e.g. special characters)."""
-
-        def _text(p: Paper) -> str:
-            authors = " ".join(a.name for a in p.authors)
-            tags = " ".join(t.name for t in p.tags)
-            return " ".join([p.title, p.abstract, p.note, p.summary or "", authors, tags]).lower()
-
-        def _score(p: Paper) -> int:
-            title_l = p.title.lower()
-            return sum(2 if t in title_l else 1 for t in tokens)
-
         low = [t.lower() for t in tokens]
-        matches = [p for p in self.list_papers() if all(t in _text(p) for t in low)]
-        return sorted(matches, key=_score, reverse=True)
+        papers = self.list_papers()
+        matches = [p for p in papers if all(t in _searchable_text(p) for t in low)]
+        return sorted(matches, key=lambda p: _title_score(p, tokens), reverse=True)
 
     def rebuild_fts(self) -> int:
         """Re-index all papers into FTS — call when FTS is out of sync."""
         self._conn.execute("DELETE FROM papers_fts")
         rows = self._conn.execute("SELECT rowid, data FROM papers").fetchall()
         for rowid, data in rows:
-            paper = _row_to_paper(data)
-            self._conn.execute(
-                "INSERT INTO papers_fts(rowid, title, abstract, summary, authors, tags) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (rowid, *_fts_text(paper)),
-            )
+            self._index_fts(rowid, _row_to_paper(data))
         self._conn.commit()
         return len(rows)
 
@@ -304,15 +343,15 @@ class PaperLibrary:
         row = self._conn.execute(
             "SELECT data FROM experiments WHERE id = ?", (experiment_id,)
         ).fetchone()
-        return Experiment.model_validate(json.loads(row[0])) if row else None
+        return _row_to_experiment(row[0]) if row else None
 
     def get_experiment_by_name(self, name: str) -> Experiment | None:
         row = self._conn.execute("SELECT data FROM experiments WHERE name = ?", (name,)).fetchone()
-        return Experiment.model_validate(json.loads(row[0])) if row else None
+        return _row_to_experiment(row[0]) if row else None
 
     def list_experiments(self) -> list[Experiment]:
         rows = self._conn.execute("SELECT data FROM experiments").fetchall()
-        return [Experiment.model_validate(json.loads(r[0])) for r in rows]
+        return [_row_to_experiment(r[0]) for r in rows]
 
     def remove_experiment(self, experiment_id: str) -> bool:
         cur = self._conn.execute("DELETE FROM experiments WHERE id = ?", (experiment_id,))
@@ -351,8 +390,8 @@ class PaperLibrary:
     def list_research_sessions(self) -> list[ResearchSession]:
         rows = self._conn.execute("SELECT data FROM research_sessions").fetchall()
         try:
-            return [ResearchSession(**json.loads(r[0])) for r in rows]
-        except Exception:
+            return [_row_to_session(r[0]) for r in rows]
+        except (json.JSONDecodeError, ValueError):
             return []
 
     def add_research_session(self, session: ResearchSession) -> None:
@@ -368,7 +407,7 @@ class PaperLibrary:
         ).fetchone()
         if row is None:
             return None
-        return ResearchSession(**json.loads(row[0]))
+        return _row_to_session(row[0])
 
     # ── Knowledge Graph ───────────────────────────────────────
 
@@ -442,23 +481,7 @@ class PaperLibrary:
         for e in edges:
             adj.setdefault(e["source"], set()).add(e["target"])
             adj.setdefault(e["target"], set()).add(e["source"])
-        visited: set[str] = set()
-        clusters: list[list[str]] = []
-        for node in adj:
-            if node in visited:
-                continue
-            cluster: list[str] = []
-            queue = [node]
-            while queue:
-                current = queue.pop(0)
-                if current in visited:
-                    continue
-                visited.add(current)
-                cluster.append(current)
-                queue.extend(adj.get(current, set()) - visited)
-            if cluster:
-                clusters.append(sorted(cluster))
-        return sorted(clusters, key=len, reverse=True)
+        return _bfs_components(adj)
 
     def get_neighbor_counts(self) -> dict[str, int]:
         """Return {paper_id: neighbor_count} for all papers with at least one edge."""
@@ -477,38 +500,27 @@ class PaperLibrary:
 
     # ── Summaries ─────────────────────────────────────────────
 
+    @property
+    def _summaries_dir(self) -> Path:
+        return self._dir.parent / "summaries"
+
     def save_summary(self, paper: Paper) -> Path:
         """Write paper.summary to ~/.openseed/summaries/{arxiv_id|id}.md."""
-        summaries_dir = self._dir.parent / "summaries"
-        summaries_dir.mkdir(parents=True, exist_ok=True)
         slug = (paper.arxiv_id or paper.id).replace("/", "_")
-        path = summaries_dir / f"{slug}.md"
         content = f"# {paper.title}\n\n{paper.summary}\n"
-        if path.exists() and path.read_text(encoding="utf-8") == content:
-            return path
-        path.write_text(content, encoding="utf-8")
-        return path
+        return _save_markdown(self._summaries_dir, f"{slug}.md", content)
 
     def save_synthesis(self, paper_ids: list[str], content: str) -> Path:
         """Write synthesis markdown."""
-        summaries_dir = self._dir.parent / "summaries"
-        summaries_dir.mkdir(parents=True, exist_ok=True)
         slug = "_".join(sorted(paper_ids)[:4])
-        path = summaries_dir / f"synthesis_{slug}.md"
-        new_content = f"# Synthesis\n\n{content}\n"
-        if path.exists() and path.read_text(encoding="utf-8") == new_content:
-            return path
-        path.write_text(new_content, encoding="utf-8")
-        return path
+        body = f"# Synthesis\n\n{content}\n"
+        return _save_markdown(self._summaries_dir, f"synthesis_{slug}.md", body)
 
     def save_report(self, session_id: str, topic: str, content: str) -> Path:
         """Write research report."""
-        summaries_dir = self._dir.parent / "summaries"
-        summaries_dir.mkdir(parents=True, exist_ok=True)
         slug = topic.lower().replace(" ", "_")[:40]
-        path = summaries_dir / f"report_{slug}_{session_id}.md"
-        new_content = f"# Research Report: {topic}\n\n{content}\n"
-        if path.exists() and path.read_text(encoding="utf-8") == new_content:
-            return path
-        path.write_text(new_content, encoding="utf-8")
-        return path
+        return _save_markdown(
+            self._summaries_dir,
+            f"report_{slug}_{session_id}.md",
+            f"# Research Report: {topic}\n\n{content}\n",
+        )

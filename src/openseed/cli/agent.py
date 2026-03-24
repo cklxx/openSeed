@@ -258,25 +258,32 @@ def _display_id_table(arxiv_ids: list[str], info: dict[str, dict], lib: PaperLib
     console.print(table)
 
 
+def _parse_range(token: str, count: int) -> list[int]:
+    """Parse '3-7' → [2,3,4,5,6] (0-indexed, clamped to count)."""
+    lo, _, hi = token.partition("-")
+    try:
+        return [i for i in range(int(lo) - 1, int(hi)) if 0 <= i < count]
+    except ValueError:
+        return []
+
+
+def _parse_single(token: str, count: int) -> list[int]:
+    """Parse '3' → [2] (0-indexed, clamped to count)."""
+    try:
+        idx = int(token) - 1
+        return [idx] if 0 <= idx < count else []
+    except ValueError:
+        return []
+
+
 def _parse_selection(raw: str, count: int) -> list[int]:
     if raw.strip().lower() == "all":
         return list(range(count))
-    indices = []
+    indices: list[int] = []
     for part in raw.split(","):
-        part = part.strip()
-        if "-" in part:
-            lo, _, hi = part.partition("-")
-            try:
-                indices.extend(i for i in range(int(lo) - 1, int(hi)) if 0 <= i < count)
-            except ValueError:
-                pass
-        else:
-            try:
-                idx = int(part) - 1
-                if 0 <= idx < count:
-                    indices.append(idx)
-            except ValueError:
-                pass
+        token = part.strip()
+        parser = _parse_range if "-" in token else _parse_single
+        indices.extend(parser(token, count))
     return indices
 
 
@@ -337,11 +344,8 @@ async def _fetch_papers(arxiv_ids: list[str]) -> list[tuple[str, Paper | Excepti
     return list(zip(arxiv_ids, results))
 
 
-def _pipeline_loop(
-    selected_ids: list[str], model: str, lib: PaperLibrary, cn: bool = False
-) -> None:
-    fetched = asyncio.run(_fetch_papers(selected_ids))
-    with Progress(
+def _make_pipeline_progress() -> Progress:
+    return Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -349,25 +353,45 @@ def _pipeline_loop(
         TextColumn("[dim]{task.completed}/{task.total}[/dim]"),
         console=console,
         transient=False,
-    ) as progress:
+    )
+
+
+def _process_fetched_paper(
+    arxiv_id: str,
+    paper: Paper | Exception,
+    model: str,
+    lib: PaperLibrary,
+    progress,
+    overall,
+    paper_task,
+    cn: bool,
+) -> None:
+    """Process a single fetched paper in the pipeline."""
+    if isinstance(paper, Exception):
+        console.print(f"[red]Failed to fetch {arxiv_id}: {paper}[/red]")
+        progress.advance(overall)
+        return
+    existing = lib.get_paper_by_arxiv(arxiv_id)
+    if existing and existing.summary:
+        console.print(
+            f"[dim]Skipping {arxiv_id} — already analyzed:[/dim] [bold]{existing.title}[/bold]"
+        )
+        progress.advance(overall)
+        return
+    _analyze_and_save(paper, model, lib, progress=progress, task_id=paper_task, cn=cn)
+    progress.advance(paper_task)
+    progress.advance(overall)
+
+
+def _pipeline_loop(
+    selected_ids: list[str], model: str, lib: PaperLibrary, cn: bool = False
+) -> None:
+    fetched = asyncio.run(_fetch_papers(selected_ids))
+    with _make_pipeline_progress() as progress:
         overall = progress.add_task("[bold]Pipeline[/bold]", total=len(selected_ids))
         paper_task = progress.add_task("", total=2)
         for arxiv_id, paper in fetched:
-            if isinstance(paper, Exception):
-                console.print(f"[red]Failed to fetch {arxiv_id}: {paper}[/red]")
-                progress.advance(overall)
-                continue
-            existing = lib.get_paper_by_arxiv(arxiv_id)
-            if existing and existing.summary:
-                console.print(
-                    f"[dim]Skipping {arxiv_id} — already analyzed:[/dim] "
-                    f"[bold]{existing.title}[/bold]"
-                )
-                progress.advance(overall)
-                continue
-            _analyze_and_save(paper, model, lib, progress=progress, task_id=paper_task, cn=cn)
-            progress.advance(paper_task)
-            progress.advance(overall)
+            _process_fetched_paper(arxiv_id, paper, model, lib, progress, overall, paper_task, cn)
 
 
 @agent.command()
@@ -403,28 +427,30 @@ def _paper_year(p: Paper) -> int | None:
     return (2000 + int(m.group(1))) if m else None
 
 
+_TIMELINE_WIDTH = 23
+
+
+def _timeline_bar(year: int, min_y: int, span: int) -> str:
+    if not year:
+        return "─" * (_TIMELINE_WIDTH + 1)
+    pos = round((year - min_y) / span * _TIMELINE_WIDTH)
+    return "─" * pos + "[bold cyan]◆[/bold cyan]" + "─" * (_TIMELINE_WIDTH - pos)
+
+
 def _synthesis_chart(papers: list[Paper]) -> Panel:
     """Render a year-timeline + tags comparison for a set of papers."""
     year_pairs = sorted((((_paper_year(p) or 0), p) for p in papers), key=lambda x: x[0])
     years = [y for y, _ in year_pairs if y]
-    min_y, max_y = (min(years), max(years)) if years else (2020, 2024)
-    span = max(max_y - min_y, 1)
-
+    min_y = min(years) if years else 2020
+    span = max((max(years) if years else 2024) - min_y, 1)
     table = Table(show_header=True, box=None, padding=(0, 1))
     table.add_column("Year", style="cyan", width=6)
     table.add_column("Timeline", width=26, no_wrap=True)
     table.add_column("Title", style="bold", max_width=36)
     table.add_column("Tags", style="yellow", max_width=28)
-
     for year, p in year_pairs:
-        if year:
-            pos = round((year - min_y) / span * 23)
-            line = "─" * pos + "[bold cyan]◆[/bold cyan]" + "─" * (23 - pos)
-        else:
-            line = "─" * 24
         tags = " ".join(t.name for t in p.tags[:4]) or "—"
-        table.add_row(str(year or "?"), line, p.title[:34], tags)
-
+        table.add_row(str(year or "?"), _timeline_bar(year, min_y, span), p.title[:34], tags)
     return Panel(table, title="Paper Timeline", border_style="blue")
 
 
@@ -436,7 +462,7 @@ def synthesize(ctx: click.Context, paper_ids: tuple[str, ...]) -> None:
     _require_auth()
     lib = get_library(ctx)
     papers = [require_paper(lib, pid) for pid in paper_ids]
-    texts = [f"Title: {p.title}\n\n{p.summary or p.abstract or p.title}" for p in papers]
+    texts = [_paper_text(p) for p in papers]
     config = get_config(ctx)
     with console.status("[cyan]Synthesizing…[/cyan]"):
         result = synthesize_papers(texts, config.default_model)
@@ -520,6 +546,25 @@ def compare(ctx: click.Context, paper_id_a: str, paper_id_b: str) -> None:
     )
 
 
+def _load_synthesis(config, paper_ids: tuple[str, ...]) -> str:
+    """Load synthesis markdown, raising SystemExit if not found."""
+    slug = "_".join(sorted(paper_ids)[:4])
+    synth_path = Path(config.config_dir) / "summaries" / f"synthesis_{slug}.md"
+    if not synth_path.exists():
+        console.print("[red]No synthesis found for these papers.[/red]")
+        console.print(f"[dim]Run: openseed agent synthesize {' '.join(paper_ids)}[/dim]")
+        raise SystemExit(1)
+    return synth_path.read_text(encoding="utf-8")
+
+
+def _write_latex_files(dest: Path, latex: str, bibtex: str) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "related_work.tex").write_text(latex, encoding="utf-8")
+    (dest / "references.bib").write_text(bibtex, encoding="utf-8")
+    console.print(f"[green]✓[/green] LaTeX → [bold]{dest / 'related_work.tex'}[/bold]")
+    console.print(f"[green]✓[/green] BibTeX → [bold]{dest / 'references.bib'}[/bold]")
+
+
 @agent.command("export-latex")
 @click.argument("paper_ids", nargs=-1, required=True)
 @click.option("--output", "out_dir", default=None, help="Output directory for .tex and .bib files.")
@@ -527,23 +572,10 @@ def compare(ctx: click.Context, paper_id_a: str, paper_id_b: str) -> None:
 def export_latex(ctx: click.Context, paper_ids: tuple[str, ...], out_dir: str | None) -> None:
     """Export synthesis as LaTeX related-work section with BibTeX."""
     lib = get_library(ctx)
+    config = get_config(ctx)
     papers = [require_paper(lib, pid) for pid in paper_ids]
-    slug = "_".join(sorted(paper_ids)[:4])
-    summaries_dir = Path(get_config(ctx).config_dir) / "summaries"
-    synth_path = summaries_dir / f"synthesis_{slug}.md"
-    if not synth_path.exists():
-        console.print("[red]No synthesis found for these papers.[/red]")
-        console.print(f"[dim]Run: openseed agent synthesize {' '.join(paper_ids)}[/dim]")
-        raise SystemExit(1)
-    synthesis = synth_path.read_text(encoding="utf-8")
+    synthesis = _load_synthesis(config, paper_ids)
     from openseed.agent.latex import export_related_work
 
     latex, bibtex = export_related_work(synthesis, papers)
-    dest = Path(out_dir) if out_dir else Path(".")
-    dest.mkdir(parents=True, exist_ok=True)
-    tex_path = dest / "related_work.tex"
-    bib_path = dest / "references.bib"
-    tex_path.write_text(latex, encoding="utf-8")
-    bib_path.write_text(bibtex, encoding="utf-8")
-    console.print(f"[green]✓[/green] LaTeX → [bold]{tex_path}[/bold]")
-    console.print(f"[green]✓[/green] BibTeX → [bold]{bib_path}[/bold]")
+    _write_latex_files(Path(out_dir) if out_dir else Path("."), latex, bibtex)

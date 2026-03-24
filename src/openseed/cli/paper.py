@@ -74,41 +74,65 @@ def _arxiv_year(arxiv_id: str | None) -> int | None:
     return (2000 + int(m.group(1))) if m else None
 
 
-def _score_bar(score: float, max_score: float, width: int = 10) -> str:
+def _score_bar(score: float) -> str:
     return f"[yellow]{score:5.1f}[/yellow]"
+
+
+def _search_table_columns(lib: PaperLibrary | None) -> Table:
+    title = "Search results"
+    table = Table(title=title, show_lines=True)
+    for name, kw in [
+        ("#", {"style": "dim", "width": 4}),
+        ("Title", {"style": "bold", "max_width": 38}),
+        ("Relevance", {"max_width": 28}),
+        ("Rank", {"width": 7, "justify": "right"}),
+        ("Year", {"justify": "right", "width": 6}),
+        ("Cite", {"justify": "right", "width": 7}),
+        ("Authors", {"style": "dim", "max_width": 18}),
+        ("ArXiv ID", {"style": "cyan", "width": 13}),
+    ]:
+        table.add_column(name, **kw)
+    if lib is not None:
+        table.add_column("Library", width=12)
+    return table
+
+
+def _search_result_row(i: int, r: dict, lib: PaperLibrary | None) -> list[str]:
+    row = [
+        str(i),
+        r["title"],
+        r["relevance"],
+        _score_bar(r.get("score", 0)),
+        str(r.get("year", "")),
+        _fmt_citations(r["citations"]),
+        r["authors"],
+        r["arxiv_id"],
+    ]
+    if lib is not None:
+        row.append(library_status_for_arxiv(lib, r["arxiv_id"]))
+    return row
 
 
 def _build_search_table(
     results: list[dict], since: int | None, lib: PaperLibrary | None = None
 ) -> Table:
-    title = "Search results" + (f" (since {since})" if since else "")
-    max_score = max((r.get("score", 0) for r in results), default=1) or 1
-    table = Table(title=title, show_lines=True)
-    table.add_column("#", style="dim", width=4)
-    table.add_column("Title", style="bold", max_width=38)
-    table.add_column("Relevance", max_width=28)
-    table.add_column("Rank", width=7, justify="right")
-    table.add_column("Year", justify="right", width=6)
-    table.add_column("Cite", justify="right", width=7)
-    table.add_column("Authors", style="dim", max_width=18)
-    table.add_column("ArXiv ID", style="cyan", width=13)
-    if lib is not None:
-        table.add_column("Library", width=12)
+    table = _search_table_columns(lib)
+    if since:
+        table.title = f"Search results (since {since})"
     for i, r in enumerate(results, 1):
-        row = [
-            str(i),
-            r["title"],
-            r["relevance"],
-            _score_bar(r.get("score", 0), max_score),
-            str(r.get("year", "")),
-            _fmt_citations(r["citations"]),
-            r["authors"],
-            r["arxiv_id"],
-        ]
-        if lib is not None:
-            row.append(library_status_for_arxiv(lib, r["arxiv_id"]))
-        table.add_row(*row)
+        table.add_row(*_search_result_row(i, r, lib))
     return table
+
+
+def _make_progress() -> Progress:
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    )
 
 
 def _run_discover(query: str, config, count: int, since: int | None) -> list[dict]:
@@ -224,13 +248,8 @@ def list_papers(ctx: click.Context, status: str | None, tag: str | None) -> None
     console.print(table)
 
 
-@paper.command()
-@click.argument("paper_id")
-@click.pass_context
-def show(ctx: click.Context, paper_id: str) -> None:
-    """Show paper details."""
-    lib = get_library(ctx)
-    p = require_paper(lib, paper_id)
+def _paper_detail_lines(p: Paper) -> list[str]:
+    """Build detail lines for paper display."""
     authors = ", ".join(a.name for a in p.authors) if p.authors else "Unknown"
     lines = [
         f"[bold]Title:[/bold] {p.title}",
@@ -240,12 +259,20 @@ def show(ctx: click.Context, paper_id: str) -> None:
         f"[bold]PDF:[/bold] {p.pdf_path or 'N/A'}",
         f"[bold]Added:[/bold] {p.added_at:%Y-%m-%d}",
     ]
-    if p.abstract:
-        lines += ["", f"[bold]Abstract:[/bold]\n{p.abstract}"]
-    if p.summary:
-        lines += ["", f"[bold]Summary:[/bold]\n{p.summary}"]
-    if p.note:
-        lines += ["", f"[bold]Note:[/bold]\n{p.note}"]
+    for label, val in [("Abstract", p.abstract), ("Summary", p.summary), ("Note", p.note)]:
+        if val:
+            lines += ["", f"[bold]{label}:[/bold]\n{val}"]
+    return lines
+
+
+@paper.command()
+@click.argument("paper_id")
+@click.pass_context
+def show(ctx: click.Context, paper_id: str) -> None:
+    """Show paper details."""
+    lib = get_library(ctx)
+    p = require_paper(lib, paper_id)
+    lines = _paper_detail_lines(p)
     console.print(Panel("\n".join(lines), title=f"Paper {p.id}", border_style="blue"))
 
 
@@ -291,6 +318,28 @@ def tag(ctx: click.Context, paper_id: str, name: str, color: str) -> None:
     console.print(f"[green]✓[/green] Tagged [bold]{p.title}[/bold] with '{name}'")
 
 
+def _download_batch(ctx: click.Context, results: list[dict], lib, config, cn: bool) -> None:
+    """Download top 10 results with a progress bar."""
+    top = results[:10]
+    console.print()
+    with _make_progress() as progress:
+        task = progress.add_task(f"[bold]Fetching {len(top)} papers…[/bold]", total=len(top))
+        for r in top:
+            progress.update(task, description=f"[cyan]Fetching {r['arxiv_id']}…[/cyan]")
+            _fetch_and_add(ctx, r, lib, config, cn)
+            progress.advance(task)
+
+
+def _add_top_result(result: dict, lib) -> None:
+    """Fetch and add the top search result."""
+    try:
+        p = asyncio.run(fetch_paper_metadata(result["arxiv_id"]))
+    except Exception:
+        p = Paper(title=result["title"], arxiv_id=result["arxiv_id"])
+    lib.add_paper(p)
+    console.print(f"[green]✓[/green] Added [bold]{p.title}[/bold] (id: {p.id})")
+
+
 @paper.command("search")
 @click.argument("query")
 @click.option("--count", default=10, show_default=True, help="Number of results to find.")
@@ -319,30 +368,9 @@ def search(
         return
     console.print(_build_search_table(results, since, lib=lib))
     if download:
-        top = results[:10]
-        console.print()
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task(f"[bold]Fetching {len(top)} papers…[/bold]", total=len(top))
-            for r in top:
-                progress.update(task, description=f"[cyan]Fetching {r['arxiv_id']}…[/cyan]")
-                _fetch_and_add(ctx, r, lib, config, cn)
-                progress.advance(task)
-        return
-    if add:
-        top = results[0]
-        try:
-            p = asyncio.run(fetch_paper_metadata(top["arxiv_id"]))
-        except Exception:
-            p = Paper(title=top["title"], arxiv_id=top["arxiv_id"])
-        lib.add_paper(p)
-        console.print(f"[green]✓[/green] Added [bold]{p.title}[/bold] (id: {p.id})")
+        _download_batch(ctx, results, lib, config, cn)
+    elif add:
+        _add_top_result(results[0], lib)
 
 
 @paper.command()
@@ -365,6 +393,16 @@ def _smart_queue_score(paper: Paper, recent_tags: set[str]) -> float:
     return tag_overlap * 1000 + recency
 
 
+def _recent_reading_tags(papers: list[Paper]) -> set[str]:
+    """Tags from the 10 most recently read papers."""
+    recent = sorted(
+        [p for p in papers if p.status in ("read", "reading")],
+        key=lambda x: x.added_at,
+        reverse=True,
+    )[:10]
+    return {t.name for p in recent for t in p.tags}
+
+
 @paper.command("next")
 @click.pass_context
 def next_paper(ctx: click.Context) -> None:
@@ -375,12 +413,7 @@ def next_paper(ctx: click.Context) -> None:
     if not unread:
         console.print("[dim]No unread papers.[/dim]")
         return
-    recent_read = sorted(
-        [p for p in all_papers if p.status in ("read", "reading")],
-        key=lambda x: x.added_at,
-        reverse=True,
-    )[:10]
-    recent_tags = {t.name for p in recent_read for t in p.tags}
+    recent_tags = _recent_reading_tags(all_papers)
     p = max(unread, key=lambda x: _smart_queue_score(x, recent_tags))
     p.status = "reading"
     lib.update_paper(p)
@@ -493,35 +526,23 @@ def watch_remove(ctx: click.Context, watch_id: str) -> None:
         raise SystemExit(1)
 
 
-@watch_group.command("run")
-@click.option("--digest/--no-digest", default=True, help="Generate a markdown digest.")
-@click.pass_context
-def watch_run(ctx: click.Context, digest: bool) -> None:
-    """Run all watches and show new papers."""
-    from openseed.services.digest import generate_digest, save_digest
+def _run_watches_with_progress(lib) -> dict:
+    """Execute all watches with a progress bar, returning results."""
     from openseed.services.watch import run_all_watches
 
-    lib = get_library(ctx)
     watches = lib.list_watches()
-    if not watches:
-        console.print("[dim]No watches configured.[/dim]")
-        return
-    watch_names = {w.id: w.query for w in watches}
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
+    with _make_progress() as progress:
         task = progress.add_task("[bold]Running watches…[/bold]", total=len(watches))
 
         def _on_progress(query: str) -> None:
             progress.update(task, description=f"[dim]✓ {query[:45]}[/dim]")
             progress.advance(task)
 
-        results = run_all_watches(lib, progress_callback=_on_progress)
+        return run_all_watches(lib, progress_callback=_on_progress)
+
+
+def _print_watch_results(results: dict, watch_names: dict[str, str]) -> None:
+    """Display watch results grouped by watch query."""
     for wid, papers in results.items():
         query = watch_names.get(wid, wid)
         console.print(f"\n[bold cyan]Watch:[/bold cyan] '{query}'")
@@ -531,11 +552,27 @@ def watch_run(ctx: click.Context, digest: bool) -> None:
         for p in papers:
             year = _arxiv_year(p.arxiv_id) or ""
             console.print(f"  [{year}] [bold]{p.title}[/bold]  [dim]{p.arxiv_id}[/dim]")
+
+
+@watch_group.command("run")
+@click.option("--digest/--no-digest", default=True, help="Generate a markdown digest.")
+@click.pass_context
+def watch_run(ctx: click.Context, digest: bool) -> None:
+    """Run all watches and show new papers."""
+    lib = get_library(ctx)
+    watches = lib.list_watches()
+    if not watches:
+        console.print("[dim]No watches configured.[/dim]")
+        return
+    watch_names = {w.id: w.query for w in watches}
+    results = _run_watches_with_progress(lib)
+    _print_watch_results(results, watch_names)
     if digest:
+        from openseed.services.digest import generate_digest, save_digest
+
         config = get_config(ctx)
         content = generate_digest(results, watch_names)
-        digest_dir = Path(config.config_dir) / "digests"
-        path = save_digest(content, digest_dir)
+        path = save_digest(content, Path(config.config_dir) / "digests")
         console.print(f"\n[dim]Digest saved → {path}[/dim]")
 
 
