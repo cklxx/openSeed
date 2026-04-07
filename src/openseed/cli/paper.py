@@ -65,6 +65,17 @@ def _download_and_extract(ctx: click.Context, paper: Paper, arxiv_id: str) -> No
         console.print(f"[yellow]Warning:[/yellow] PDF processing failed: {exc}")
 
 
+def _store_full_text(lib: PaperLibrary, paper: Paper) -> None:
+    """Store full PDF text in the database for claim extraction."""
+    if paper.pdf_path:
+        try:
+            text = extract_text(paper.pdf_path)
+            if text:
+                lib.save_full_text(paper.id, text)
+        except Exception:
+            pass
+
+
 def _fmt_citations(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
@@ -196,9 +207,10 @@ def paper(ctx: click.Context) -> None:
 
 @paper.command()
 @click.argument("url")
-@click.option("--fetch-pdf/--no-fetch-pdf", default=False, help="Download and extract PDF text")
+@click.option("--fetch-pdf/--no-fetch-pdf", default=True, help="Download and extract PDF text")
+@click.option("--no-claims", is_flag=True, help="Skip claim analysis after adding")
 @click.pass_context
-def add(ctx: click.Context, url: str, fetch_pdf: bool) -> None:
+def add(ctx: click.Context, url: str, fetch_pdf: bool, no_claims: bool) -> None:
     """Add a paper by URL (ArXiv or direct link)."""
     lib = get_library(ctx)
     arxiv_id = parse_arxiv_id(url)
@@ -214,12 +226,17 @@ def add(ctx: click.Context, url: str, fetch_pdf: bool) -> None:
             )
         if fetch_pdf:
             _download_and_extract(ctx, p, arxiv_id)
+            _store_full_text(lib, p)
     else:
         p = Paper(title=url, url=url)
     if not lib.add_paper(p):
         console.print(f"[yellow]Already in library:[/yellow] {p.title}")
         return
     console.print(f"[green]✓[/green] Added [bold]{p.title}[/bold] (id: {p.id})")
+    if not no_claims:
+        from openseed.cli.alerts import run_claim_analysis
+
+        run_claim_analysis(p.id, lib)
 
 
 @paper.command("list")

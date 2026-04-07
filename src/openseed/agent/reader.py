@@ -153,6 +153,16 @@ def auto_tag_paper(
     return [t.strip().lower() for t in result.split(",") if t.strip()][:5]
 
 
+def _ask_json(model: str, system: str, prompt: str) -> list | dict:
+    """Ask Claude for JSON output and parse it. Raises ValueError on failure."""
+    raw = _ask(model, system, prompt)
+    raw = re.sub(r"```[a-z]*\n?", "", raw).strip().strip("```")
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"Failed to parse JSON response: {raw[:200]}") from exc
+
+
 def generate_experiment_code(text: str, model: str) -> str:
     """Generate runnable Python experiment code based on paper content."""
     system = (

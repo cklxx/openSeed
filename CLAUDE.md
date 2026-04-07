@@ -49,9 +49,9 @@ OpenSeed is an AI-powered research workflow CLI. It manages a local paper librar
 
 | Module | Purpose |
 |---|---|
-| `cli/` | Click groups: `paper`, `experiment`, `agent` |
-| `models/` | Pydantic models: Paper, Author, Tag, Experiment, ExperimentRun |
-| `storage/library.py` | SQLite-backed CRUD for papers + experiments + knowledge graph |
+| `cli/` | Click groups: `paper`, `experiment`, `agent`, `alerts` |
+| `models/` | Pydantic models: Paper, Author, Tag, Experiment, ExperimentRun, Claim, ClaimEdge, Alert |
+| `storage/library.py` | SQLite-backed CRUD for papers + experiments + knowledge graph + claims |
 | `services/arxiv.py` | ArXiv metadata fetch + search (sync + async) |
 | `services/pdf.py` | PDF text extraction via PyMuPDF |
 | `services/scholar.py` | Semantic Scholar API client (citations, references, recommendations) |
@@ -63,6 +63,8 @@ OpenSeed is an AI-powered research workflow CLI. It manages a local paper librar
 | `agent/discovery.py` | Paper discovery — Claude search + S2 enrichment |
 | `agent/compare.py` | Paper comparison — structured side-by-side analysis |
 | `agent/latex.py` | LaTeX related-work export with BibTeX |
+| `agent/claims.py` | Claim extraction — atomic claims from papers via Claude |
+| `agent/matcher.py` | Claim matching — FTS5 retrieval + Claude classification + alerts |
 | `agent/assistant.py` | ResearchAssistant — freeform ask/review via Claude |
 | `services/rss.py` | RSS/Atom feed discovery |
 | `services/sharing.py` | Research session export/import for collaboration |

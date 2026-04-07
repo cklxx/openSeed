@@ -37,3 +37,4 @@ Thumbs.db
 logs/
 .openmax/
 .openmax-worktrees/
+.gstack/

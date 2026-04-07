@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openseed"
-version = "1.0.0"
+version = "1.1.0"
 description = "AI-powered Research Workflow Management CLI"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -49,6 +49,9 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/openseed/viewer/app.py" = ["E501"]  # HTML template contains long URLs
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

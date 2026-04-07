@@ -30,7 +30,64 @@ from openseed.models.paper import Paper
 from openseed.models.research import ResearchSession
 from openseed.models.watch import ArxivWatch
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+
+_V2_SQL = """
+CREATE TABLE IF NOT EXISTS paper_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    claim_text TEXT NOT NULL,
+    claim_type TEXT NOT NULL,
+    section TEXT,
+    source_quote TEXT,
+    confidence REAL DEFAULT 1.0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(paper_id, claim_text)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS paper_claims_fts USING fts5(
+    claim_text, content='paper_claims', content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS paper_claims_ai AFTER INSERT ON paper_claims BEGIN
+    INSERT INTO paper_claims_fts(rowid, claim_text) VALUES (new.id, new.claim_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_claims_ad AFTER DELETE ON paper_claims BEGIN
+    INSERT INTO paper_claims_fts(paper_claims_fts, rowid, claim_text)
+    VALUES('delete', old.id, old.claim_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_claims_au AFTER UPDATE ON paper_claims BEGIN
+    INSERT INTO paper_claims_fts(paper_claims_fts, rowid, claim_text)
+    VALUES('delete', old.id, old.claim_text);
+    INSERT INTO paper_claims_fts(rowid, claim_text) VALUES (new.id, new.claim_text);
+END;
+
+CREATE TABLE IF NOT EXISTS claim_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_claim_id INTEGER NOT NULL REFERENCES paper_claims(id) ON DELETE CASCADE,
+    target_claim_id INTEGER NOT NULL REFERENCES paper_claims(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    reasoning TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(source_claim_id, target_claim_id)
+);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_edge_id INTEGER NOT NULL REFERENCES claim_edges(id) ON DELETE CASCADE,
+    alert_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    is_read INTEGER DEFAULT 0,
+    is_dismissed INTEGER DEFAULT 0,
+    is_useful INTEGER DEFAULT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(claim_edge_id)
+);
+"""
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS papers (
@@ -203,7 +260,28 @@ class PaperLibrary:
         self._conn.executescript(_CREATE_SQL)
         row = self._conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
-            self._conn.execute("INSERT INTO schema_version VALUES (?)", (_SCHEMA_VERSION,))
+            self._conn.execute("INSERT INTO schema_version VALUES (1)")
+            self._conn.commit()
+        self._upgrade_schema()
+
+    def _has_column(self, table: str, column: str) -> bool:
+        """Check if a column exists on a table via PRAGMA."""
+        cols = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(c[1] == column for c in cols)
+
+    def _upgrade_schema(self) -> None:
+        """Incrementally upgrade schema to the latest version."""
+        row = self._conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        current = row[0] if row else 1
+        if current >= _SCHEMA_VERSION:
+            return
+        if current < 2:
+            self._conn.executescript(_V2_SQL)
+            if not self._has_column("papers", "claims_status"):
+                self._conn.execute("ALTER TABLE papers ADD COLUMN claims_status TEXT DEFAULT NULL")
+            if not self._has_column("papers", "full_text"):
+                self._conn.execute("ALTER TABLE papers ADD COLUMN full_text TEXT DEFAULT NULL")
+            self._conn.execute("UPDATE schema_version SET version = 2")
             self._conn.commit()
 
     def _auto_migrate(self) -> None:
@@ -524,3 +602,177 @@ class PaperLibrary:
             f"report_{slug}_{session_id}.md",
             f"# Research Report: {topic}\n\n{content}\n",
         )
+
+    # ── Claims ─────────────────────────────────────────────────
+
+    def set_claims_status(self, paper_id: str, status: str | None) -> None:
+        """Update the claims_status column for a paper."""
+        self._conn.execute("UPDATE papers SET claims_status = ? WHERE id = ?", (status, paper_id))
+        self._conn.commit()
+
+    def get_claims_status(self, paper_id: str) -> str | None:
+        """Read claims_status for a paper."""
+        row = self._conn.execute(
+            "SELECT claims_status FROM papers WHERE id = ?", (paper_id,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def save_full_text(self, paper_id: str, text: str) -> None:
+        """Store full extracted PDF text for a paper."""
+        self._conn.execute("UPDATE papers SET full_text = ? WHERE id = ?", (text, paper_id))
+        self._conn.commit()
+
+    def get_full_text(self, paper_id: str) -> str | None:
+        """Read full_text for a paper."""
+        row = self._conn.execute(
+            "SELECT full_text FROM papers WHERE id = ?", (paper_id,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def clear_claims(self, paper_id: str) -> int:
+        """Atomically delete all claims for a paper. CASCADE removes edges/alerts."""
+        cur = self._conn.execute("DELETE FROM paper_claims WHERE paper_id = ?", (paper_id,))
+        self._conn.commit()
+        return cur.rowcount
+
+    def add_claims(self, claims: list[dict]) -> list[int]:
+        """Batch-insert claims and return their row IDs."""
+        ids: list[int] = []
+        for c in claims:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO paper_claims "
+                "(paper_id, claim_text, claim_type, section, source_quote, confidence) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    c["paper_id"],
+                    c["claim_text"],
+                    c["claim_type"],
+                    c.get("section"),
+                    c.get("source_quote"),
+                    c.get("confidence", 1.0),
+                ),
+            )
+            if cur.lastrowid:
+                ids.append(cur.lastrowid)
+        self._conn.commit()
+        return ids
+
+    def search_claims_fts(self, query: str, limit: int = 10) -> list[dict]:
+        """FTS5 search for claims. Returns dicts with id, paper_id, claim_text."""
+        tokens = [t for t in query.split() if len(t) > 2]
+        if not tokens:
+            return []
+        safe_q = " OR ".join('"' + t.replace('"', '""') + '"' for t in tokens[:8])
+        try:
+            rows = self._conn.execute(
+                "SELECT c.id, c.paper_id, c.claim_text, c.claim_type "
+                "FROM paper_claims_fts f "
+                "JOIN paper_claims c ON c.id = f.rowid "
+                "WHERE paper_claims_fts MATCH ? "
+                "ORDER BY rank LIMIT ?",
+                (safe_q, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [
+            {"id": r[0], "paper_id": r[1], "claim_text": r[2], "claim_type": r[3]} for r in rows
+        ]
+
+    def get_claims_for_paper(self, paper_id: str) -> list[dict]:
+        """Return all claims for a paper."""
+        rows = self._conn.execute(
+            "SELECT id, claim_text, claim_type, section, source_quote, confidence "
+            "FROM paper_claims WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "claim_text": r[1],
+                "claim_type": r[2],
+                "section": r[3],
+                "source_quote": r[4],
+                "confidence": r[5],
+            }
+            for r in rows
+        ]
+
+    def add_claim_edge(
+        self,
+        src_id: int,
+        tgt_id: int,
+        relation: str,
+        confidence: float,
+        reasoning: str | None = None,
+    ) -> int | None:
+        """Insert a claim edge. Returns row ID or None if duplicate."""
+        try:
+            cur = self._conn.execute(
+                "INSERT INTO claim_edges "
+                "(source_claim_id, target_claim_id, relation, confidence, reasoning) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (src_id, tgt_id, relation, confidence, reasoning),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+    def add_alert(
+        self, edge_id: int, alert_type: str, summary: str, confidence: float
+    ) -> int | None:
+        """Insert an alert. Returns row ID or None if duplicate."""
+        try:
+            cur = self._conn.execute(
+                "INSERT INTO alerts "
+                "(claim_edge_id, alert_type, summary, confidence) "
+                "VALUES (?, ?, ?, ?)",
+                (edge_id, alert_type, summary, confidence),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+    def list_alerts(self, unread_only: bool = True) -> list[dict]:
+        """List alerts, optionally filtered to unread, sorted by confidence."""
+        where = "WHERE a.is_read = 0 AND a.is_dismissed = 0" if unread_only else ""
+        rows = self._conn.execute(
+            f"SELECT a.id, a.alert_type, a.summary, a.confidence, a.is_read, "
+            f"a.is_dismissed, a.is_useful, a.created_at, a.claim_edge_id "
+            f"FROM alerts a {where} ORDER BY a.confidence DESC"
+        ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "alert_type": r[1],
+                "summary": r[2],
+                "confidence": r[3],
+                "is_read": bool(r[4]),
+                "is_dismissed": bool(r[5]),
+                "is_useful": None if r[6] is None else bool(r[6]),
+                "created_at": r[7],
+                "claim_edge_id": r[8],
+            }
+            for r in rows
+        ]
+
+    def update_alert(self, alert_id: int, **fields) -> bool:
+        """Update alert fields (is_read, is_dismissed, is_useful)."""
+        allowed = {"is_read", "is_dismissed", "is_useful"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return False
+        sets = ", ".join(f"{k} = ?" for k in updates)
+        vals = list(updates.values()) + [alert_id]
+        cur = self._conn.execute(f"UPDATE alerts SET {sets} WHERE id = ?", vals)
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def papers_needing_claims(self) -> list[dict]:
+        """Return papers with null/failed/pending claims_status."""
+        rows = self._conn.execute(
+            "SELECT id, title, arxiv_id FROM papers "
+            "WHERE claims_status IS NULL OR claims_status IN ('failed', 'pending')"
+        ).fetchall()
+        return [{"id": r[0], "title": r[1], "arxiv_id": r[2]} for r in rows]
